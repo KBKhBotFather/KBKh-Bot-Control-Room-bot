@@ -5,14 +5,17 @@ import threading
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 
 import psycopg2
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     Application,
+    CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
+    MessageHandler,
+    filters,
 )
 
-# Render Port Server (Render-কে লাইভ রাখার জন্য)
+# Render Dynamic Port Server
 def run_dummy_server():
   port = int(os.environ.get("PORT", 10000))
   server = HTTPServer(("0.0.0.0", port), SimpleHTTPRequestHandler)
@@ -21,200 +24,233 @@ def run_dummy_server():
 
 threading.Thread(target=run_dummy_server, daemon=True).start()
 
-# Logging Configuration
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
 )
 logger = logging.getLogger(__name__)
 
-# Environment Variables
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 ADMIN_ID = os.environ.get("ADMIN_ID")
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
 
-# Database Helper & Init
 def get_db_connection():
   return psycopg2.connect(DATABASE_URL, sslmode="require")
 
 
 def init_db():
-  """সব বটের জন্য প্রয়োজনীয় টেবিল ডাটাবেসে অটো-ক্রিয়েট করবে"""
   try:
     conn = get_db_connection()
     cur = conn.cursor()
-    # Users/Block table
     cur.execute("""
-            CREATE TABLE IF NOT EXISTS users (
+            CREATE TABLE IF NOT EXISTS members (
                 user_id BIGINT PRIMARY KEY,
-                username VARCHAR(100),
-                is_blocked BOOLEAN DEFAULT FALSE
+                name VARCHAR(100),
+                team_type VARCHAR(50),
+                sub_team VARCHAR(50),
+                is_blocked BOOLEAN DEFAULT FALSE,
+                is_removed BOOLEAN DEFAULT FALSE
             );
         """)
-    # Tasks table
     cur.execute("""
-            CREATE TABLE IF NOT EXISTS tasks (
+            CREATE TABLE IF NOT EXISTS member_activity (
                 id SERIAL PRIMARY KEY,
                 user_id BIGINT,
-                task_detail TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                month VARCHAR(20),
+                tasks_completed INT DEFAULT 0,
+                holidays_taken INT DEFAULT 0,
+                articles_submitted INT DEFAULT 0
             );
         """)
-    # Holidays table
     cur.execute("""
-            CREATE TABLE IF NOT EXISTS holidays (
-                id SERIAL PRIMARY KEY,
-                user_id BIGINT,
-                reason TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
-        """)
-    # Articles table
-    cur.execute("""
-            CREATE TABLE IF NOT EXISTS articles (
-                id SERIAL PRIMARY KEY,
-                user_id BIGINT,
-                title TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            CREATE TABLE IF NOT EXISTS bot_settings (
+                setting_key VARCHAR(50) PRIMARY KEY,
+                setting_value TEXT
             );
         """)
     conn.commit()
     cur.close()
     conn.close()
-    logger.info("Database tables initialized successfully.")
   except Exception as e:
-    logger.error(f"Database Init Error: {e}")
+    logger.error(f"DB Init Error: {e}")
 
 
-# Command Handlers
+# Main Menu Keyboard
+def main_menu_keyboard():
+  keyboard = [
+      [
+          InlineKeyboardButton(
+              "1. Info Team Task", callback_data="menu_info_task"
+          )
+      ],
+      [
+          InlineKeyboardButton(
+              "2. Meme Team Task", callback_data="menu_meme_task"
+          )
+      ],
+      [
+          InlineKeyboardButton(
+              "3. Block Member", callback_data="menu_block_member"
+          )
+      ],
+      [InlineKeyboardButton("4. Unblock", callback_data="menu_unblock")],
+      [
+          InlineKeyboardButton(
+              "5. Reset All Data", callback_data="menu_reset_data"
+          )
+      ],
+  ]
+  return InlineKeyboardMarkup(keyboard)
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
   user_id = str(update.effective_user.id)
   if ADMIN_ID and user_id != str(ADMIN_ID):
-    await update.message.reply_text("⛔ আপনি এই বটটি ব্যবহারের জন্য অনুমোদিত নন।")
+    await update.message.reply_text("⛔ Access Blocked⛔")
     return
 
   await update.message.reply_text(
-      "👑 **KBKh Bot Control Room**\n\n"
-      "সেন্ট্রাল ডাটাবেস ও সাব-বট সার্ভিস কানেক্টেড!\n\n"
-      "📌 **এডমিন কমান্ডসমূহ:**\n"
-      "🔹 `/stats` - সকল বটের ডাটা সংখ্যা দেখুন\n"
-      "🔹 `/export` - সব বটের রিপোর্টের বিবরণ দেখুন\n"
-      "🔹 `/block <user_id>` - মেম্বার ব্লক করুন\n"
-      "🔹 `/unblock <user_id>` - মেম্বার আনব্লক করুন\n",
+      "👑 **KBKh Bot Control Room**\n\nনিচের অপশনগুলো থেকে আপনার প্রয়োজনীয় সার্ভিস"
+      " সিলেক্ট করুন:",
+      reply_markup=main_menu_keyboard(),
       parse_mode="Markdown",
   )
 
 
-async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-  user_id = str(update.effective_user.id)
-  if ADMIN_ID and user_id != str(ADMIN_ID):
-    return
+# Menu Handlers
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+  query = update.callback_query
+  await query.answer()
+  data = query.data
 
-  try:
-    conn = get_db_connection()
-    cur = conn.cursor()
-
-    cur.execute("SELECT COUNT(*) FROM tasks;")
-    tasks_count = cur.fetchone()[0]
-
-    cur.execute("SELECT COUNT(*) FROM holidays;")
-    holidays_count = cur.fetchone()[0]
-
-    cur.execute("SELECT COUNT(*) FROM articles;")
-    articles_count = cur.fetchone()[0]
-
-    cur.execute(
-        "SELECT COUNT(*) FROM users WHERE is_blocked = TRUE;"
+  if data == "menu_info_task":
+    keyboard = [
+        [
+            InlineKeyboardButton(
+                "i. See Details", callback_data="info_see_details"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "ii. Export Data", callback_data="info_export_data"
+            )
+        ],
+        [InlineKeyboardButton("🔙 Back", callback_data="main_menu")],
+    ]
+    await query.edit_message_text(
+        "📅 **Info Team Task - Select Option:**",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown",
     )
-    blocked_count = cur.fetchone()[0]
 
-    cur.close()
-    conn.close()
-
-    msg = (
-        "📊 **সেন্ট্রাল ডাটাবেস স্ট্যাটাস**\n\n"
-        f"📝 মোট টাস্ক জমা: `{tasks_count}` টি\n"
-        f"🏖️ মোট ছুটির আবেদন: `{holidays_count}` টি\n"
-        f"📰 মোট আর্টিকেল: `{articles_count}` টি\n"
-        f"🚫 ব্লকড ইউজার: `{blocked_count}` জন\n"
+  elif data == "info_export_data":
+    keyboard = [
+        [InlineKeyboardButton("1. Edit Prompt", callback_data="edit_prompt")],
+        [InlineKeyboardButton("2. Export PDF", callback_data="export_pdf_start")],
+        [InlineKeyboardButton("🔙 Back", callback_data="menu_info_task")],
+    ]
+    await query.edit_message_text(
+        "📤 **Export Data Settings:**",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown",
     )
-    await update.message.reply_text(msg, parse_mode="Markdown")
-  except Exception as e:
-    await update.message.reply_text(f"❌ ডাটাবেস এরর: {e}")
 
-
-async def block_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-  user_id = str(update.effective_user.id)
-  if ADMIN_ID and user_id != str(ADMIN_ID):
-    return
-
-  if not context.args:
-    await update.message.reply_text("ব্যবহার করুন: `/block <user_id>`")
-    return
-
-  target_id = context.args[0]
-  try:
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute(
-        "INSERT INTO users (user_id, is_blocked) VALUES (%s, TRUE) ON CONFLICT"
-        " (user_id) DO UPDATE SET is_blocked = TRUE;",
-        (target_id,),
+  elif data == "edit_prompt":
+    keyboard = [
+        [
+            InlineKeyboardButton(
+                "1. Info Team Prompt", callback_data="prompt_info"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "2. Meme Team Prompt", callback_data="prompt_meme"
+            )
+        ],
+        [InlineKeyboardButton("🔙 Back", callback_data="info_export_data")],
+    ]
+    await query.edit_message_text(
+        "📝 **Select Prompt to Edit:**",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown",
     )
-    conn.commit()
-    cur.close()
-    conn.close()
-    await update.message.reply_text(
-        f"✅ ইউজার ID `{target_id}` কে সফলভাবে ব্লক করা হয়েছে।"
+
+  elif data == "menu_block_member":
+    keyboard = [
+        [
+            InlineKeyboardButton(
+                "Info Team Members", callback_data="block_team_info"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "Meme Team Members", callback_data="block_team_meme"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "Task Control Moderator", callback_data="block_team_mod"
+            )
+        ],
+        [InlineKeyboardButton("🔙 Back", callback_data="main_menu")],
+    ]
+    await query.edit_message_text(
+        "🚫 **Select Category to Block:**",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown",
     )
-  except Exception as e:
-    await update.message.reply_text(f"❌ এরর: {e}")
 
-
-async def unblock_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-  user_id = str(update.effective_user.id)
-  if ADMIN_ID and user_id != str(ADMIN_ID):
-    return
-
-  if not context.args:
-    await update.message.reply_text("ব্যবহার করুন: `/unblock <user_id>`")
-    return
-
-  target_id = context.args[0]
-  try:
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute(
-        "UPDATE users SET is_blocked = FALSE WHERE user_id = %s;", (target_id,)
+  elif data == "menu_reset_data":
+    keyboard = [
+        [InlineKeyboardButton("1. Info Team", callback_data="reset_info")],
+        [InlineKeyboardButton("2. Meme Team", callback_data="reset_meme")],
+        [InlineKeyboardButton("🔙 Back", callback_data="main_menu")],
+    ]
+    await query.edit_message_text(
+        "⚠️ **Reset Data Center:**\nকোন টিমের ডাটা রিসেট করতে চান?",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown",
     )
-    conn.commit()
-    cur.close()
-    conn.close()
-    await update.message.reply_text(
-        f"✅ ইউজার ID `{target_id}` কে আনব্লক করা হয়েছে।"
+
+  elif data == "reset_info":
+    keyboard = [
+        [
+            InlineKeyboardButton(
+                "1. Specific Team Data", callback_data="reset_info_specific"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "2. Reset All Info Team Data", callback_data="reset_info_all"
+            )
+        ],
+        [InlineKeyboardButton("🔙 Back", callback_data="menu_reset_data")],
+    ]
+    await query.edit_message_text(
+        "🔴 **Info Team Reset Options:**",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown",
     )
-  except Exception as e:
-    await update.message.reply_text(f"❌ এরর: {e}")
+
+  elif data == "main_menu":
+    await query.edit_message_text(
+        "👑 **KBKh Bot Control Room**\n\nনিচের অপশনগুলো থেকে নির্বাচন করুন:",
+        reply_markup=main_menu_keyboard(),
+        parse_mode="Markdown",
+    )
 
 
 def main():
   if not BOT_TOKEN:
-    logger.error("BOT_TOKEN Missing!")
     return
-
-  # ডাটাবেস টেবিল ইনিশিয়ালাইজেশন
   init_db()
-
   app = Application.builder().token(BOT_TOKEN).build()
 
-  # Command Handlers
   app.add_handler(CommandHandler("start", start))
-  app.add_handler(CommandHandler("stats", stats))
-  app.add_handler(CommandHandler("block", block_user))
-  app.add_handler(CommandHandler("unblock", unblock_user))
+  app.add_handler(CallbackQueryHandler(handle_callback))
 
-  logger.info("Control Room Bot is polling...")
+  logger.info("Control Room Engine Running...")
   app.run_polling(drop_pending_updates=True)
 
 
