@@ -23,7 +23,7 @@ def home():
 def run_flask():
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
 
-# 🔌 Database Connection Helper
+# 🔌 Database Connection & Schema Helper
 def get_db_connection():
     if not DB_URI:
         raise ValueError("DB_URI Environment Variable is missing in Render!")
@@ -31,6 +31,39 @@ def get_db_connection():
     if uri.startswith("postgres://"):
         uri = uri.replace("postgres://", "postgresql://", 1)
     return psycopg2.connect(uri)
+
+def init_db():
+    """ডাটাবেজে প্রয়োজনীয় কলাম ও টেবিল না থাকলে অটোমেটিক তৈরি করবে"""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # members টেবিল তৈরি (যদি না থাকে)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS members (
+                telegram_id BIGINT PRIMARY KEY,
+                fb_name TEXT,
+                full_name TEXT,
+                unique_id TEXT,
+                team_name TEXT,
+                status TEXT DEFAULT 'Pending',
+                is_blocked BOOLEAN DEFAULT FALSE
+            );
+        """)
+        
+        # মিসিং কলামগুলো যুক্ত করা
+        cursor.execute("ALTER TABLE members ADD COLUMN IF NOT EXISTS is_blocked BOOLEAN DEFAULT FALSE;")
+        cursor.execute("ALTER TABLE members ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'Pending';")
+        cursor.execute("ALTER TABLE members ADD COLUMN IF NOT EXISTS unique_id TEXT;")
+        cursor.execute("ALTER TABLE members ADD COLUMN IF NOT EXISTS full_name TEXT;")
+        cursor.execute("ALTER TABLE members ADD COLUMN IF NOT EXISTS fb_name TEXT;")
+        cursor.execute("ALTER TABLE members ADD COLUMN IF NOT EXISTS team_name TEXT;")
+        
+        conn.commit()
+        conn.close()
+        print("✅ Database Schema Synced Successfully!")
+    except Exception as e:
+        print(f"⚠️ DB Init Error: {e}")
 
 # 🛡️ Admin Verification
 def is_admin(tg_id):
@@ -117,7 +150,7 @@ def members_list_cat(message):
     )
     bot.send_message(message.chat.id, "📋 **ক্যাটাগরি ভিত্তিক মেম্বার তালিকা দেখুন:**", parse_mode="Markdown", reply_markup=markup)
 
-# ⛔ 3. BLOCK MEMBER BUTTON (Dynamic Member Selection)
+# ⛔ 3. BLOCK MEMBER BUTTON
 @bot.message_handler(func=lambda msg: msg.text == "⛔ Block Member")
 def block_member_prompt(message):
     if not is_admin(message.from_user.id):
@@ -126,7 +159,7 @@ def block_member_prompt(message):
     try:
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
-        cursor.execute("SELECT telegram_id, fb_name, unique_id, team_name FROM members WHERE is_blocked = FALSE AND status != 'Blocked'")
+        cursor.execute("SELECT telegram_id, fb_name, unique_id, team_name FROM members WHERE is_blocked = FALSE AND (status IS NULL OR status != 'Blocked')")
         active_members = cursor.fetchall()
         conn.close()
 
@@ -136,7 +169,9 @@ def block_member_prompt(message):
 
         markup = InlineKeyboardMarkup()
         for m in active_members:
-            markup.add(InlineKeyboardButton(f"🚫 Block {m['fb_name']} ({m['team_name']})", callback_data=f"block_act_{m['telegram_id']}"))
+            display_name = m.get('fb_name') or f"User {m['telegram_id']}"
+            team = m.get('team_name') or "No Team"
+            markup.add(InlineKeyboardButton(f"🚫 Block {display_name} ({team})", callback_data=f"block_act_{m['telegram_id']}"))
 
         bot.send_message(message.chat.id, "⛔ **যাকে ব্লক করতে চান তার নামের উপর ক্লিক করুন:**", parse_mode="Markdown", reply_markup=markup)
     except Exception as e:
@@ -161,7 +196,9 @@ def unblock_member_prompt(message):
 
         markup = InlineKeyboardMarkup()
         for m in blocked_members:
-            markup.add(InlineKeyboardButton(f"✅ Unblock {m['fb_name']} ({m['unique_id']})", callback_data=f"unblock_act_{m['telegram_id']}"))
+            display_name = m.get('fb_name') or f"User {m['telegram_id']}"
+            uid = m.get('unique_id') or "N/A"
+            markup.add(InlineKeyboardButton(f"✅ Unblock {display_name} ({uid})", callback_data=f"unblock_act_{m['telegram_id']}"))
 
         bot.send_message(message.chat.id, "✅ **যাকে আনব্লক করতে চান তাকে নির্বাচন করুন:**", parse_mode="Markdown", reply_markup=markup)
     except Exception as e:
@@ -187,8 +224,11 @@ def blocked_list_show(message):
         text = f"🚫 **ব্লকড মেম্বারদের তালিকা ({len(blocked_members)} জন):**\n━━━━━━━━━━━━━━━━━━━━━\n"
         markup = InlineKeyboardMarkup()
         for m in blocked_members:
-            text += f"👤 **{m['fb_name']}** | {m['team_name']} | ID: `{m['unique_id']}`\n"
-            markup.add(InlineKeyboardButton(f"✅ Unblock {m['fb_name']}", callback_data=f"unblock_act_{m['telegram_id']}"))
+            display_name = m.get('fb_name') or f"User {m['telegram_id']}"
+            team = m.get('team_name') or "N/A"
+            uid = m.get('unique_id') or "N/A"
+            text += f"👤 **{display_name}** | {team} | ID: `{uid}`\n"
+            markup.add(InlineKeyboardButton(f"✅ Unblock {display_name}", callback_data=f"unblock_act_{m['telegram_id']}"))
 
         bot.send_message(message.chat.id, text, parse_mode="Markdown", reply_markup=markup)
     except Exception as e:
@@ -219,10 +259,9 @@ def handle_control_callbacks(call):
             conn.commit()
             conn.close()
 
-            fb_name = res[0] if res else "User"
+            fb_name = res[0] if (res and res[0]) else "User"
             bot.edit_message_text(f"⛔ **{fb_name}** (TG ID: `{target_id}`)-কে সফলভাবে ব্লক করা হয়েছে!", call.message.chat.id, call.message.message_id, parse_mode="Markdown")
 
-            # Alert user via bot if open
             try:
                 bot.send_message(target_id, "❌ **আপনাকে সিস্টেম থেকে ব্লক করা হয়েছে!**")
             except Exception:
@@ -241,7 +280,7 @@ def handle_control_callbacks(call):
             conn.commit()
             conn.close()
 
-            fb_name = res[0] if res else "User"
+            fb_name = res[0] if (res and res[0]) else "User"
             bot.edit_message_text(f"✅ **{fb_name}** (TG ID: `{target_id}`)-কে আনব্লক করা হয়েছে!", call.message.chat.id, call.message.message_id, parse_mode="Markdown")
 
             try:
@@ -291,8 +330,10 @@ def handle_control_callbacks(call):
 
             markup = InlineKeyboardMarkup()
             for m in members:
-                status_icon = "🚫" if m['is_blocked'] else "👤"
-                markup.add(InlineKeyboardButton(f"{status_icon} {m['fb_name']} ({m['unique_id']})", callback_data=f"ctrl_det_{m['telegram_id']}"))
+                status_icon = "🚫" if m.get('is_blocked') else "👤"
+                display_name = m.get('fb_name') or f"User {m['telegram_id']}"
+                uid = m.get('unique_id') or "N/A"
+                markup.add(InlineKeyboardButton(f"{status_icon} {display_name} ({uid})", callback_data=f"ctrl_det_{m['telegram_id']}"))
 
             bot.edit_message_text(f"🌐 **{team_name}**-এর মেম্বার তালিকা ({len(members)} জন):", call.message.chat.id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
 
@@ -305,27 +346,29 @@ def handle_control_callbacks(call):
         conn.close()
 
         if u:
-            block_state = "🚫 Blocked" if u['is_blocked'] else "✅ Active"
+            is_blk = u.get('is_blocked') or False
+            block_state = "🚫 Blocked" if is_blk else "✅ Active"
             msg_text = (
                 f"📄 **Member Details**\n━━━━━━━━━━━━━━━━━━\n"
-                f"👥 **FB Name:** {u['fb_name']}\n"
-                f"📛 **Full Name:** {u['full_name']}\n"
-                f"🆔 **Unique ID:** {u['unique_id']}\n"
-                f"🌐 **Team:** {u['team_name']}\n"
-                f"⚡ **Status:** {u['status']} ({block_state})\n"
+                f"👥 **FB Name:** {u.get('fb_name', 'N/A')}\n"
+                f"📛 **Full Name:** {u.get('full_name', 'N/A')}\n"
+                f"🆔 **Unique ID:** {u.get('unique_id', 'N/A')}\n"
+                f"🌐 **Team:** {u.get('team_name', 'N/A')}\n"
+                f"⚡ **Status:** {u.get('status', 'N/A')} ({block_state})\n"
                 f"🆔 **TG ID:** `{u['telegram_id']}`\n━━━━━━━━━━━━━━━━━━"
             )
 
             markup = InlineKeyboardMarkup()
-            if u['is_blocked']:
-                markup.add(InlineKeyboardButton(f"✅ Unblock {u['fb_name']}", callback_data=f"unblock_act_{target_id}"))
+            if is_blk:
+                markup.add(InlineKeyboardButton(f"✅ Unblock {u.get('fb_name', 'User')}", callback_data=f"unblock_act_{target_id}"))
             else:
-                markup.add(InlineKeyboardButton(f"🚫 Block {u['fb_name']}", callback_data=f"block_act_{target_id}"))
+                markup.add(InlineKeyboardButton(f"🚫 Block {u.get('fb_name', 'User')}", callback_data=f"block_act_{target_id}"))
 
             bot.edit_message_text(msg_text, call.message.chat.id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
 
 # 🚀 BOT LAUNCH
 if __name__ == "__main__":
+    init_db()  # ডাটাবেজ টেবিল ও কলাম অটো-সিঙ্ক
     t = threading.Thread(target=run_flask)
     t.start()
     print("🤖 KBKh Control Room Bot is Running...")
