@@ -304,19 +304,20 @@ def unblock_system_start(message):
         bot.send_message(message.chat.id, f"⚠️ ডাটাবেজ এরর: {e}")
 
 # ====================================================
-# 4. RESET ALL DATA WORKFLOW
+# 4. RESET ALL DATA WORKFLOW (FIXED & EXPANDED)
 # ====================================================
 @bot.message_handler(func=lambda msg: msg.text == "🔄 Reset All Data")
 def reset_data_start(message):
     if not is_admin(message.from_user.id):
         return
 
-    markup = InlineKeyboardMarkup(row_width=2)
+    markup = InlineKeyboardMarkup(row_width=1)
     markup.add(
         InlineKeyboardButton("ℹ️ Info Team Data", callback_data="rst_cat_Info Team"),
-        InlineKeyboardButton("🎭 Meme Team Data", callback_data="rst_cat_Meme Team")
+        InlineKeyboardButton("🎭 Meme Team Data", callback_data="rst_cat_Meme Team"),
+        InlineKeyboardButton("💥 Reset Entire Database (All Members & Tasks)", callback_data="rst_cat_FULL_RESET")
     )
-    bot.send_message(message.chat.id, "⚠️ **কোন ক্যাটাগরির ডাটা রিসেট করতে চান?**\n*(ডাটা স্ট্রাকচার সম্পূর্ণ আইসোলেটেড থাকবে)*", parse_mode="Markdown", reply_markup=markup)
+    bot.send_message(message.chat.id, "⚠️ **কোন ক্যাটাগরির ডাটা রিসেট করতে চান?**\n*(মেম্বার রেজিস্টার্ড ডাটা ও টাস্ক রেকর্ড ডিলিট হয়ে যাবে)*", parse_mode="Markdown", reply_markup=markup)
 
 # ====================================================
 # 🔘 CALLBACK QUERY HANDLER
@@ -565,71 +566,79 @@ def handle_control_callbacks(call):
     elif data == "do_unblk_no":
         bot.edit_message_text("❌ আনব্লক প্রক্রিয়া বাতিল করা হয়েছে।", call.message.chat.id, call.message.message_id)
 
-    # --- Reset Data Category & Sub-team Actions ---
+    # --- Reset Data Category & Sub-team Actions (FIXED) ---
     elif data.startswith("rst_cat_"):
         r_cat = data.replace("rst_cat_", "")
-        state["reset_cat"] = r_cat
-        user_state[tg_id] = state
 
-        markup = InlineKeyboardMarkup(row_width=2)
+        if r_cat == "FULL_RESET":
+            markup = InlineKeyboardMarkup(row_width=2)
+            markup.add(
+                InlineKeyboardButton("🔥 Yes, Reset EVERYTHING", callback_data="do_rst_FULL_SYSTEM"),
+                InlineKeyboardButton("No ❌", callback_data="do_rst_no")
+            )
+            bot.send_message(call.message.chat.id, "🚨 **WARNING:** আপনি ইকোসিস্টেমের **সকল মেম্বার এবং সকল টাস্ক ডাটা** স্থায়ীভাবে মুছে ফেলতে যাচ্ছেন!\n\nচালিয়ে যেতে নিশ্চিত করুন:", parse_mode="Markdown", reply_markup=markup)
+            return
+
+        markup = InlineKeyboardMarkup(row_width=1)
         sub_teams = TEAMS_MAP.get(r_cat, [])
         for st in sub_teams:
             markup.add(InlineKeyboardButton(f"🧹 Reset {st}", callback_data=f"rst_sub_{st}"))
-        markup.add(InlineKeyboardButton("💥 Reset All Category Data", callback_data=f"rst_all_{r_cat}"))
+        markup.add(InlineKeyboardButton(f"💥 Reset All {r_cat} Data", callback_data=f"rst_all_{r_cat}"))
 
         bot.send_message(call.message.chat.id, f"⚠️ **{r_cat} Reset Panel:**", reply_markup=markup)
 
     elif data.startswith("rst_sub_"):
         st_name = data.replace("rst_sub_", "")
-        state["reset_target"] = st_name
-        user_state[tg_id] = state
 
         markup = InlineKeyboardMarkup(row_width=2)
         markup.add(
-            InlineKeyboardButton("Yes ✅", callback_data="do_rst_sub_yes"),
+            InlineKeyboardButton("Yes ✅", callback_data=f"do_rst_sub_yes_{st_name}"),
             InlineKeyboardButton("No ❌", callback_data="do_rst_no")
         )
-        bot.send_message(call.message.chat.id, f"⚠️ **আপনি কি নিশ্চিত যে {st_name}-এর সকল টাস্ক ও ডাটা রিসেট করবেন?**", reply_markup=markup)
+        bot.send_message(call.message.chat.id, f"⚠️ **আপনি কি নিশ্চিত যে {st_name}-এর সকল মেম্বার ও টাস্ক ডাটা রিসেট করবেন?**", parse_mode="Markdown", reply_markup=markup)
 
-    elif data == "do_rst_sub_yes":
-        st_name = state.get("reset_target")
+    elif data.startswith("do_rst_sub_yes_"):
+        st_name = data.replace("do_rst_sub_yes_", "")
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("""
-            DELETE FROM task_records WHERE telegram_id IN (
-                SELECT telegram_id FROM members WHERE team_name = %s
-            )
-        """, (st_name,))
+        cursor.execute("DELETE FROM task_records WHERE telegram_id IN (SELECT telegram_id FROM members WHERE team_name = %s)", (st_name,))
+        cursor.execute("DELETE FROM members WHERE team_name = %s", (st_name,))
         conn.commit()
         conn.close()
 
-        bot.edit_message_text(f"✅ **{st_name}**-এর সকল ডাটা সফলভাবে রিসেট করা হয়েছে!", call.message.chat.id, call.message.message_id)
+        bot.edit_message_text(f"✅ **{st_name}**-এর সকল মেম্বার ও টাস্ক ডাটা সফলভাবে রিসেট করা হয়েছে!", call.message.chat.id, call.message.message_id)
 
     elif data.startswith("rst_all_"):
         r_cat = data.replace("rst_all_", "")
-        state["reset_all_cat"] = r_cat
-        user_state[tg_id] = state
 
         markup = InlineKeyboardMarkup(row_width=2)
         markup.add(
-            InlineKeyboardButton("⚠️ Yes, Proceed", callback_data="do_rst_all_double_conf"),
+            InlineKeyboardButton("⚠️ Yes, Proceed", callback_data=f"do_rst_all_yes_{r_cat}"),
             InlineKeyboardButton("No ❌", callback_data="do_rst_no")
         )
-        bot.send_message(call.message.chat.id, f"🚨 **WARNING:** আপনি **{r_cat}**-এর অধীনস্থ সকল সাব-টিমের সমস্ত ডাটা মুছে ফেলতে যাচ্ছেন!\nচালিয়ে যেতে নিশ্চিত করুন:", reply_markup=markup)
+        bot.send_message(call.message.chat.id, f"🚨 **WARNING:** আপনি **{r_cat}**-এর অধীনস্থ সকল সাব-টিমের সমস্ত মেম্বার ও টাস্ক ডাটা মুছে ফেলতে যাচ্ছেন!\nচালিয়ে যেতে নিশ্চিত করুন:", parse_mode="Markdown", reply_markup=markup)
 
-    elif data == "do_rst_all_double_conf":
-        r_cat = state.get("reset_all_cat")
+    elif data.startswith("do_rst_all_yes_"):
+        r_cat = data.replace("do_rst_all_yes_", "")
+        teams = TEAMS_MAP.get(r_cat, [])
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("""
-            DELETE FROM task_records WHERE telegram_id IN (
-                SELECT telegram_id FROM members WHERE team_name = ANY(%s)
-            )
-        """, (TEAMS_MAP.get(r_cat, []),))
+        cursor.execute("DELETE FROM task_records WHERE telegram_id IN (SELECT telegram_id FROM members WHERE team_name = ANY(%s))", (teams,))
+        cursor.execute("DELETE FROM members WHERE team_name = ANY(%s)", (teams,))
         conn.commit()
         conn.close()
 
-        bot.edit_message_text(f"💥 **{r_cat}**-এর সকল সাব-টিমের ডাটা স্থায়ীভাবে রিসেট করা হয়েছে!", call.message.chat.id, call.message.message_id)
+        bot.edit_message_text(f"💥 **{r_cat}**-এর সকল সাব-টিমের মেম্বার ও টাস্ক ডাটা স্থায়ীভাবে রিসেট করা হয়েছে!", call.message.chat.id, call.message.message_id)
+
+    elif data == "do_rst_FULL_SYSTEM":
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("TRUNCATE TABLE task_records;")
+        cursor.execute("TRUNCATE TABLE members;")
+        conn.commit()
+        conn.close()
+
+        bot.edit_message_text("🔥 **ইকোসিস্টেমের সকল মেম্বার রেজিস্টার্ড ডাটা ও টাস্ক রেকর্ড সফলভাবে রিসেট (Wipe) করা হয়েছে!**\nএখন নতুন অ্যাকাউন্ট দিয়ে পুনরায় টেস্ট করতে পারবেন।", call.message.chat.id, call.message.message_id)
 
     elif data == "do_rst_no":
         bot.edit_message_text("❌ রিসেট প্রক্রিয়া বাতিল করা হয়েছে।", call.message.chat.id, call.message.message_id)
