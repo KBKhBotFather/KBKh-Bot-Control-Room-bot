@@ -43,13 +43,12 @@ def get_db_connection():
         uri = uri.replace("postgres://", "postgresql://", 1)
     return psycopg2.connect(uri)
 
-# 🛠️ Central DB Tables Initializer (Ecosystem Ready)
+# 🛠️ Central DB Tables Initializer
 def init_db():
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
 
-        # 1. Central Members Table
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS members (
                 telegram_id BIGINT PRIMARY KEY,
@@ -65,7 +64,6 @@ def init_db():
             );
         """)
 
-        # 2. System Prompts Table
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS system_prompts (
                 category TEXT PRIMARY KEY,
@@ -74,7 +72,6 @@ def init_db():
             );
         """)
 
-        # Default Prompts Insert
         cursor.execute("""
             INSERT INTO system_prompts (category, prompt_text)
             VALUES 
@@ -83,7 +80,6 @@ def init_db():
             ON CONFLICT (category) DO NOTHING;
         """)
 
-        # 3. Dynamic Rules Table
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS dynamic_rules (
                 id SERIAL PRIMARY KEY,
@@ -95,7 +91,6 @@ def init_db():
             );
         """)
 
-        # Insert Default Bangla Rules
         default_rules = [
             ("Info Team", "Approved Holidays Safety net", "অনুমোদিত ছুটির দিনে সদস্যর কাজের হিসাব সুরক্ষিত থাকবে।", "Safety_Net=Active"),
             ("Info Team", "Excellent Position", "সবগুলো টাস্ক ও কাজ যথাসময়ে সম্পন্ন করলে এই ক্যাটাগরি পাবে।", "Min_Task_Pct=90%"),
@@ -113,7 +108,6 @@ def init_db():
                 ON CONFLICT (category, rule_key) DO NOTHING;
             """, (cat, rkey, exp, param))
 
-        # 4. Aggregated Task Records Table (Task, Holiday, Article Bots Integration)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS task_records (
                 id SERIAL PRIMARY KEY,
@@ -135,29 +129,12 @@ def init_db():
 
 init_db()
 
-# 🛡️ Access & Admin Verification
+# 🛡️ Admin Verification
 def is_admin(tg_id):
     if not ADMIN_CHAT_ID:
         return True
     return str(tg_id).strip() == str(ADMIN_CHAT_ID).strip()
 
-def check_user_access(tg_id):
-    """অন্যান্য বটের ইন্টারসেপশনের জন্য হেলপার ফাংশন"""
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT status, is_blocked, is_removed FROM members WHERE telegram_id = %s", (tg_id,))
-        res = cursor.fetchone()
-        conn.close()
-        if not res or res[2]:  # Unregistered / Removed
-            return "UNREGISTERED"
-        if res[1] or res[0] == "Blocked":  # Blocked
-            return "BLOCKED"
-        return "APPROVED"
-    except Exception:
-        return "UNREGISTERED"
-
-# 🗂️ Constants
 TEAMS_MAP = {
     "Info Team": ["Team Alpha", "Team Beta", "Team Gamma"],
     "Meme Team": ["Team Electron", "Team Proton", "Team Neutron"]
@@ -167,7 +144,6 @@ MONTHS = ["January", "February", "March", "April", "May", "June", "July", "Augus
 
 user_state = {}
 
-# 📱 Control Panel Keyboards
 def admin_main_menu():
     markup = ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
     markup.add(
@@ -184,14 +160,12 @@ def cancel_keyboard():
     markup.add(KeyboardButton("❌ Cancel"))
     return markup
 
-# ----------------------------------------------------
 # 📌 /start Command
-# ----------------------------------------------------
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     tg_id = message.from_user.id
     if not is_admin(tg_id):
-        bot.send_message(message.chat.id, "❌ **আপনার এই বটে অ্যাক্সেস করার অনুমতি নেই!**\nরজিস্ট্রেশন করতে রেজিস্টার্ড বটে যোগাযোগ করুন।")
+        bot.send_message(message.chat.id, "❌ **আপনার এই বটে অ্যাক্সেস করার অনুমতি নেই!**")
         return
 
     welcome_text = (
@@ -201,7 +175,6 @@ def send_welcome(message):
     )
     bot.send_message(message.chat.id, welcome_text, parse_mode="Markdown", reply_markup=admin_main_menu())
 
-# 🛑 Interceptor Helper
 def handle_cancel(message):
     if message.text in ["❌ Cancel", "/cancel"]:
         user_state.pop(message.from_user.id, None)
@@ -209,14 +182,10 @@ def handle_cancel(message):
         return True
     return False
 
-# ====================================================
-# 1. INFO TEAM & MEME TEAM TASK WORKFLOW
-# ====================================================
+# 1. INFO & MEME TASK WORKFLOW
 @bot.message_handler(func=lambda msg: msg.text in ["ℹ️ Info Team Task", "🎭 Meme Team Task"])
 def task_workflow_start(message):
-    if not is_admin(message.from_user.id):
-        return
-
+    if not is_admin(message.from_user.id): return
     category = "Info Team" if "Info" in message.text else "Meme Team"
     user_state[message.from_user.id] = {"category": category}
 
@@ -238,14 +207,10 @@ def show_month_options(chat_id, tg_id):
     )
     bot.send_message(chat_id, f"📌 **ক্যাটাগরি:** {cat}\n📅 **মাস:** {month}\n\nনিচের যেকোনো অপশন নির্বাচন করুন:", parse_mode="Markdown", reply_markup=markup)
 
-# ====================================================
-# 2. BLOCK MEMBER MANAGEMENT
-# ====================================================
+# 2. BLOCK MEMBER
 @bot.message_handler(func=lambda msg: msg.text == "⛔ Block Member")
 def block_member_start(message):
-    if not is_admin(message.from_user.id):
-        return
-
+    if not is_admin(message.from_user.id): return
     markup = InlineKeyboardMarkup(row_width=1)
     markup.add(
         InlineKeyboardButton("ℹ️ Info Team", callback_data="blk_cat_Info Team"),
@@ -254,14 +219,10 @@ def block_member_start(message):
     )
     bot.send_message(message.chat.id, "⛔ **কাকে ব্লক করতে চান? ক্যাটাগরি বেছে নিন:**", parse_mode="Markdown", reply_markup=markup)
 
-# ====================================================
-# 3. UNBLOCK SYSTEM WORKFLOW
-# ====================================================
+# 3. UNBLOCK
 @bot.message_handler(func=lambda msg: msg.text == "✅ Unblock")
 def unblock_system_start(message):
-    if not is_admin(message.from_user.id):
-        return
-
+    if not is_admin(message.from_user.id): return
     try:
         conn = get_db_connection()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
@@ -276,7 +237,6 @@ def unblock_system_start(message):
         text = "🔓 **ব্লকড সদস্যদের ক্যাটাগরিভিত্তিক তালিকা:**\n\n"
         markup = InlineKeyboardMarkup()
 
-        # Grouping by Teams
         for parent_cat, sub_teams in TEAMS_MAP.items():
             text += f"📌 **{parent_cat}:**\n"
             for st in sub_teams:
@@ -289,39 +249,23 @@ def unblock_system_start(message):
                     text += f"  ├ {st}: [Empty]\n"
             text += "\n"
 
-        # Moderators
-        mods = [m for m in blocked_list if m.get('user_type') == 'Task Control Moderator']
-        text += "🛡️ **Task Control Moderator:**\n"
-        if mods:
-            for m in mods:
-                text += f"  ├ {m['fb_name']} ⛔\n"
-                markup.add(InlineKeyboardButton(f"🔓 Unblock {m['fb_name']} (Mod)", callback_data=f"confirm_unblk_{m['telegram_id']}"))
-        else:
-            text += "  └ [Empty]\n"
-
         bot.send_message(message.chat.id, text, parse_mode="Markdown", reply_markup=markup)
     except Exception as e:
         bot.send_message(message.chat.id, f"⚠️ ডাটাবেজ এরর: {e}")
 
-# ====================================================
-# 4. RESET ALL DATA WORKFLOW (FIXED & EXPANDED)
-# ====================================================
+# 4. RESET ALL DATA
 @bot.message_handler(func=lambda msg: msg.text == "🔄 Reset All Data")
 def reset_data_start(message):
-    if not is_admin(message.from_user.id):
-        return
-
+    if not is_admin(message.from_user.id): return
     markup = InlineKeyboardMarkup(row_width=1)
     markup.add(
         InlineKeyboardButton("ℹ️ Info Team Data", callback_data="rst_cat_Info Team"),
         InlineKeyboardButton("🎭 Meme Team Data", callback_data="rst_cat_Meme Team"),
-        InlineKeyboardButton("💥 Reset Entire Database (All Members & Tasks)", callback_data="rst_cat_FULL_RESET")
+        InlineKeyboardButton("💥 Reset Entire Database (All Data)", callback_data="rst_cat_FULL_RESET")
     )
-    bot.send_message(message.chat.id, "⚠️ **কোন ক্যাটাগরির ডাটা রিসেট করতে চান?**\n*(মেম্বার রেজিস্টার্ড ডাটা ও টাস্ক রেকর্ড ডিলিট হয়ে যাবে)*", parse_mode="Markdown", reply_markup=markup)
+    bot.send_message(message.chat.id, "⚠️ **কোন ক্যাটাগরির ডাটা রিসেট করতে চান?**", parse_mode="Markdown", reply_markup=markup)
 
-# ====================================================
 # 🔘 CALLBACK QUERY HANDLER
-# ====================================================
 @bot.callback_query_handler(func=lambda call: True)
 def handle_control_callbacks(call):
     tg_id = call.from_user.id
@@ -330,14 +274,11 @@ def handle_control_callbacks(call):
         return
 
     data = call.data
-    try:
-        bot.answer_callback_query(call.id)
-    except Exception:
-        pass
+    try: bot.answer_callback_query(call.id)
+    except Exception: pass
 
     state = user_state.get(tg_id, {})
 
-    # --- Task Workflow Month Selection ---
     if data.startswith("sel_month_"):
         month = data.replace("sel_month_", "")
         state["month"] = month
@@ -345,15 +286,12 @@ def handle_control_callbacks(call):
         bot.edit_message_text(f"✅ **মাস নির্বাচিত:** {month}", call.message.chat.id, call.message.message_id, parse_mode="Markdown")
         show_month_options(call.message.chat.id, tg_id)
 
-    # --- See Details Action ---
     elif data == "task_opt_details":
         cat = state.get("category", "Info Team")
         month = state.get("month", "January")
-
         try:
             conn = get_db_connection()
             cursor = conn.cursor(cursor_factory=RealDictCursor)
-
             cursor.execute("""
                 SELECT m.fb_name, COALESCE(t.task_done, 0) as task_done, COALESCE(t.task_total, 3) as task_total, 
                        COALESCE(t.holiday_days, 0) as holiday_days, COALESCE(t.article_count, 0) as article_count
@@ -361,7 +299,6 @@ def handle_control_callbacks(call):
                 LEFT JOIN task_records t ON m.telegram_id = t.telegram_id AND t.month = %s
                 WHERE m.team_name = ANY(%s) AND m.is_blocked = FALSE AND m.is_removed = FALSE
             """, (month, TEAMS_MAP.get(cat, [])))
-
             records = cursor.fetchall()
             conn.close()
 
@@ -371,14 +308,11 @@ def handle_control_callbacks(call):
 
             msg_text = f"📊 **KBKh {cat} Task Details ({month}):**\n━━━━━━━━━━━━━━━━━━━━━\n"
             for r in records:
-                msg_text += f"• **{r['fb_name']}** - {r['task_done']}/{r['task_total']} - {r['holiday_days']}Days - {r['article_count']} *(Task / Holiday / Article)*\n"
-            msg_text += "━━━━━━━━━━━━━━━━━━━━━"
-
+                msg_text += f"• **{r['fb_name']}** - {r['task_done']}/{r['task_total']} - {r['holiday_days']}Days - {r['article_count']} *(Task/Holiday/Article)*\n"
             bot.send_message(call.message.chat.id, msg_text, parse_mode="Markdown")
         except Exception as e:
             bot.send_message(call.message.chat.id, f"⚠️ ডাটা সংকলনে এরর: {e}")
 
-    # --- Export Data Sub-Options ---
     elif data == "task_opt_export":
         markup = InlineKeyboardMarkup(row_width=2)
         markup.add(
@@ -387,14 +321,13 @@ def handle_control_callbacks(call):
         )
         bot.send_message(call.message.chat.id, "⚙️ **Export Data Options:**", reply_markup=markup)
 
-    # --- Edit Prompt Workflow ---
     elif data == "exp_sub_prompt":
         markup = InlineKeyboardMarkup(row_width=2)
         markup.add(
             InlineKeyboardButton("ℹ️ Info Team Prompt", callback_data="view_prm_Info Team"),
             InlineKeyboardButton("🎭 Meme Team Prompt", callback_data="view_prm_Meme Team")
         )
-        bot.send_message(call.message.chat.id, "✏️ **পদ্ধতি পছন্দ করুন:** System Prompt পরিবর্তন করতে টিম সিলেক্ট করুন:", reply_markup=markup)
+        bot.send_message(call.message.chat.id, "✏️ **System Prompt পরিবর্তন করতে টিম সিলেক্ট করুন:**", reply_markup=markup)
 
     elif data.startswith("view_prm_"):
         p_cat = data.replace("view_prm_", "")
@@ -408,10 +341,9 @@ def handle_control_callbacks(call):
         state["edit_prompt_cat"] = p_cat
         user_state[tg_id] = state
 
-        msg = bot.send_message(call.message.chat.id, f"📝 **Current Prompt ({p_cat}):**\n```\n{current_prompt}\n```\nনতুন System Prompt দিয়ে ওভাররাইট করতে চাইলে টেক্সট লিখে পাঠান:", parse_mode="Markdown", reply_markup=cancel_keyboard())
+        msg = bot.send_message(call.message.chat.id, f"📝 **Current Prompt ({p_cat}):**\n```\n{current_prompt}\n```\nনতুন System Prompt দিয়ে ওভাররাইট করতে টেক্সট পাঠান:", parse_mode="Markdown", reply_markup=cancel_keyboard())
         bot.register_next_step_handler(msg, process_overwrite_prompt)
 
-    # --- Export Process Flow ---
     elif data == "exp_sub_process":
         markup = InlineKeyboardMarkup(row_width=2)
         markup.add(
@@ -426,157 +358,26 @@ def handle_control_callbacks(call):
         state["uploaded_files"] = []
         user_state[tg_id] = state
 
-        msg = bot.send_message(call.message.chat.id, f"📂 **File Upload Step ({proc_cat}):**\nঅনুগহ করে পরপর ২টি ডাটা ফাইল (800K & 100K) ডকুমেন্ট আকারে আপলোড করুন।", reply_markup=cancel_keyboard())
+        msg = bot.send_message(call.message.chat.id, f"📂 **File Upload Step ({proc_cat}):**\nঅনুগহ করে পরপর ২টি ডাটা ফাইল আপলোড করুন।", reply_markup=cancel_keyboard())
         bot.register_next_step_handler(msg, process_file_upload_step)
 
-    # --- Dynamic Logic Rules Display ---
-    elif data.startswith("rule_click_"):
-        rule_id = int(data.replace("rule_click_", ""))
-        conn = get_db_connection()
-        cursor = conn.cursor(cursor_factory=RealDictCursor)
-        cursor.execute("SELECT * FROM dynamic_rules WHERE id = %s", (rule_id,))
-        rule = cursor.fetchone()
-        conn.close()
+    elif data == "blocklist_add_yes":
+        msg = bot.send_message(call.message.chat.id, "📝 সদস্য/সদস্যদের নাম কমা (,) দিয়ে আলাদা করে টাইপ করুন:", reply_markup=cancel_keyboard())
+        bot.register_next_step_handler(msg, process_blocklist_names_input)
 
-        if rule:
-            state["selected_rule_id"] = rule_id
-            user_state[tg_id] = state
+    elif data == "blocklist_add_no":
+        show_dynamic_logic_review(call.message.chat.id, tg_id)
 
-            rule_text = (
-                f"📌 **Rule:** {rule['rule_key']}\n"
-                f"💡 **ব্যাখ্যা:** {rule['explanation']}\n"
-                f"⚙️ **Parameters:** `{rule['parameters']}`\n\n"
-                f"**Would you like to change anything in this regard?**"
-            )
-            markup = InlineKeyboardMarkup(row_width=2)
-            markup.add(
-                InlineKeyboardButton("Yes ✅", callback_data="rule_change_yes"),
-                InlineKeyboardButton("No ❌", callback_data="rule_change_no")
-            )
-            bot.send_message(call.message.chat.id, rule_text, parse_mode="Markdown", reply_markup=markup)
-
-    elif data == "rule_change_yes":
-        msg = bot.send_message(call.message.chat.id, "✍️ বাংলা বা ইংরেজিতে আপনার নতুন নিয়ম বা নির্দেশনাবলী লিখে জানান:", reply_markup=cancel_keyboard())
-        bot.register_next_step_handler(msg, process_rule_update_text)
-
-    elif data == "rule_change_no":
-        show_export_pdf_button(call.message.chat.id, tg_id)
-
-    elif data == "trigger_pdf_export":
-        markup = InlineKeyboardMarkup(row_width=3)
-        markup.add(
-            InlineKeyboardButton("Yes ✅", callback_data="confirm_pdf_yes"),
-            InlineKeyboardButton("No ❌", callback_data="confirm_pdf_no"),
-            InlineKeyboardButton("Cancel 🚫", callback_data="confirm_pdf_cancel")
-        )
-        bot.send_message(call.message.chat.id, "📄 **আপনি কি নিশ্চিত যে PDF ফাইল জেনারেট ও এক্সপোর্ট করতে চান?**", reply_markup=markup)
-
-    elif data == "confirm_pdf_yes":
-        generate_and_send_pdf(call.message.chat.id, tg_id)
-
-    elif data in ["confirm_pdf_no", "confirm_pdf_cancel"]:
-        bot.send_message(call.message.chat.id, "❌ PDF এক্সপোর্ট বাতিল করা হয়েছে।", reply_markup=admin_main_menu())
-
-    # --- Block Category Handler ---
-    elif data.startswith("blk_cat_"):
-        b_cat = data.replace("blk_cat_", "")
-        conn = get_db_connection()
-        cursor = conn.cursor(cursor_factory=RealDictCursor)
-
-        if b_cat == "Moderator":
-            cursor.execute("SELECT * FROM members WHERE user_type = 'Task Control Moderator' AND is_blocked = FALSE")
-        else:
-            cursor.execute("SELECT * FROM members WHERE team_name = ANY(%s) AND is_blocked = FALSE AND is_removed = FALSE", (TEAMS_MAP.get(b_cat, []),))
-
-        members = cursor.fetchall()
-        conn.close()
-
-        if not members:
-            bot.send_message(call.message.chat.id, "ℹ️ এই ক্যাটাগরিতে কোনো অ্যাক্টিভ মেম্বার পাওয়া যায়নি।")
-            return
-
-        markup = InlineKeyboardMarkup()
-        for m in members:
-            markup.add(InlineKeyboardButton(f"👤 {m['fb_name']} ({m['team_name'] or 'Mod'})", callback_data=f"show_blk_opts_{m['telegram_id']}"))
-
-        bot.send_message(call.message.chat.id, f"📋 **{b_cat}** অ্যাক্টিভ মেম্বার তালিকা:", reply_markup=markup)
-
-    elif data.startswith("show_blk_opts_"):
-        target_id = int(data.replace("show_blk_opts_", ""))
-        conn = get_db_connection()
-        cursor = conn.cursor(cursor_factory=RealDictCursor)
-        cursor.execute("SELECT * FROM members WHERE telegram_id = %s", (target_id,))
-        m = cursor.fetchone()
-        conn.close()
-
-        if m:
-            markup = InlineKeyboardMarkup(row_width=2)
-            markup.add(
-                InlineKeyboardButton("⛔ Temporary Block", callback_data=f"act_temp_blk_{target_id}"),
-                InlineKeyboardButton("❌ Delete & Block", callback_data=f"act_del_blk_{target_id}")
-            )
-            bot.send_message(call.message.chat.id, f"👤 **Member:** {m['fb_name']}\n🆔 **Unique ID:** {m['unique_id']}\n\nঅ্যাকশন সিলেক্ট করুন:", reply_markup=markup)
-
-    elif data.startswith("act_temp_blk_"):
-        target_id = int(data.replace("act_temp_blk_", ""))
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("UPDATE members SET is_blocked = TRUE, status = 'Blocked' WHERE telegram_id = %s RETURNING fb_name", (target_id,))
-        res = cursor.fetchone()
-        conn.commit()
-        conn.close()
-
-        name = res[0] if res else "User"
-        bot.edit_message_text(f"⛔ **{name}**-কে সাময়িকভাবে ব্লক করা হয়েছে!\n(ইকোসিস্টেমের সব বটের অ্যাক্সেস বন্ধ হয়েছে)", call.message.chat.id, call.message.message_id)
-
-    elif data.startswith("act_del_blk_"):
-        target_id = int(data.replace("act_del_blk_", ""))
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("UPDATE members SET is_blocked = TRUE, is_removed = TRUE, status = 'Removed' WHERE telegram_id = %s RETURNING fb_name", (target_id,))
-        res = cursor.fetchone()
-        conn.commit()
-        conn.close()
-
-        name = res[0] if res else "User"
-        bot.edit_message_text(f"❌ **{name}**-কে স্থায়ীভাবে রিমুভ ও ব্লক করা হয়েছে!\n(পুনরায় যুক্ত হতে নতুন করে রেজিস্টার করতে হবে)", call.message.chat.id, call.message.message_id)
-
-    # --- Unblock Confirmation Action ---
-    elif data.startswith("confirm_unblk_"):
-        target_id = int(data.replace("confirm_unblk_", ""))
-        markup = InlineKeyboardMarkup(row_width=2)
-        markup.add(
-            InlineKeyboardButton("Yes ✅", callback_data=f"do_unblk_yes_{target_id}"),
-            InlineKeyboardButton("No ❌", callback_data="do_unblk_no")
-        )
-        bot.send_message(call.message.chat.id, "🔓 **আপনি কি সদস্যটিকে আনব্লক করতে চান?**", reply_markup=markup)
-
-    elif data.startswith("do_unblk_yes_"):
-        target_id = int(data.replace("do_unblk_yes_", ""))
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("UPDATE members SET is_blocked = FALSE, is_removed = FALSE, status = 'Approved' WHERE telegram_id = %s RETURNING fb_name", (target_id,))
-        res = cursor.fetchone()
-        conn.commit()
-        conn.close()
-
-        name = res[0] if res else "User"
-        bot.edit_message_text(f"✅ **{name}**-কে সফলভাবে আনব্লক করা হয়েছে এবং অ্যাক্সেস পুনরুদ্বারের ব্যবস্থা করা হয়েছে!", call.message.chat.id, call.message.message_id)
-
-    elif data == "do_unblk_no":
-        bot.edit_message_text("❌ আনব্লক প্রক্রিয়া বাতিল করা হয়েছে।", call.message.chat.id, call.message.message_id)
-
-    # --- Reset Data Category & Sub-team Actions (FIXED) ---
+    # RESET DATA ACTIONS
     elif data.startswith("rst_cat_"):
         r_cat = data.replace("rst_cat_", "")
-
         if r_cat == "FULL_RESET":
             markup = InlineKeyboardMarkup(row_width=2)
             markup.add(
                 InlineKeyboardButton("🔥 Yes, Reset EVERYTHING", callback_data="do_rst_FULL_SYSTEM"),
                 InlineKeyboardButton("No ❌", callback_data="do_rst_no")
             )
-            bot.send_message(call.message.chat.id, "🚨 **WARNING:** আপনি ইকোসিস্টেমের **সকল মেম্বার এবং সকল টাস্ক ডাটা** স্থায়ীভাবে মুছে ফেলতে যাচ্ছেন!\n\nচালিয়ে যেতে নিশ্চিত করুন:", parse_mode="Markdown", reply_markup=markup)
+            bot.send_message(call.message.chat.id, "🚨 **WARNING:** আপনি ইকোসিস্টেমের **সকল মেম্বার এবং সকল টাস্ক ডাটা** মুছে ফেলতে যাচ্ছেন!", parse_mode="Markdown", reply_markup=markup)
             return
 
         markup = InlineKeyboardMarkup(row_width=1)
@@ -584,18 +385,16 @@ def handle_control_callbacks(call):
         for st in sub_teams:
             markup.add(InlineKeyboardButton(f"🧹 Reset {st}", callback_data=f"rst_sub_{st}"))
         markup.add(InlineKeyboardButton(f"💥 Reset All {r_cat} Data", callback_data=f"rst_all_{r_cat}"))
-
         bot.send_message(call.message.chat.id, f"⚠️ **{r_cat} Reset Panel:**", reply_markup=markup)
 
     elif data.startswith("rst_sub_"):
         st_name = data.replace("rst_sub_", "")
-
         markup = InlineKeyboardMarkup(row_width=2)
         markup.add(
             InlineKeyboardButton("Yes ✅", callback_data=f"do_rst_sub_yes_{st_name}"),
             InlineKeyboardButton("No ❌", callback_data="do_rst_no")
         )
-        bot.send_message(call.message.chat.id, f"⚠️ **আপনি কি নিশ্চিত যে {st_name}-এর সকল মেম্বার ও টাস্ক ডাটা রিসেট করবেন?**", parse_mode="Markdown", reply_markup=markup)
+        bot.send_message(call.message.chat.id, f"⚠️ **{st_name}-এর সকল মেম্বার ও টাস্ক ডাটা রিসেট করবেন?**", parse_mode="Markdown", reply_markup=markup)
 
     elif data.startswith("do_rst_sub_yes_"):
         st_name = data.replace("do_rst_sub_yes_", "")
@@ -605,18 +404,16 @@ def handle_control_callbacks(call):
         cursor.execute("DELETE FROM members WHERE team_name = %s", (st_name,))
         conn.commit()
         conn.close()
-
-        bot.edit_message_text(f"✅ **{st_name}**-এর সকল মেম্বার ও টাস্ক ডাটা সফলভাবে রিসেট করা হয়েছে!", call.message.chat.id, call.message.message_id)
+        bot.edit_message_text(f"✅ **{st_name}**-এর সকল ডাটা রিসেট করা হয়েছে!", call.message.chat.id, call.message.message_id)
 
     elif data.startswith("rst_all_"):
         r_cat = data.replace("rst_all_", "")
-
         markup = InlineKeyboardMarkup(row_width=2)
         markup.add(
             InlineKeyboardButton("⚠️ Yes, Proceed", callback_data=f"do_rst_all_yes_{r_cat}"),
             InlineKeyboardButton("No ❌", callback_data="do_rst_no")
         )
-        bot.send_message(call.message.chat.id, f"🚨 **WARNING:** আপনি **{r_cat}**-এর অধীনস্থ সকল সাব-টিমের সমস্ত মেম্বার ও টাস্ক ডাটা মুছে ফেলতে যাচ্ছেন!\nচালিয়ে যেতে নিশ্চিত করুন:", parse_mode="Markdown", reply_markup=markup)
+        bot.send_message(call.message.chat.id, f"🚨 **WARNING:** **{r_cat}**-এর অধীনস্থ সকল ডাটা মুছে ফেলতে নিশ্চিত করুন:", parse_mode="Markdown", reply_markup=markup)
 
     elif data.startswith("do_rst_all_yes_"):
         r_cat = data.replace("do_rst_all_yes_", "")
@@ -627,8 +424,7 @@ def handle_control_callbacks(call):
         cursor.execute("DELETE FROM members WHERE team_name = ANY(%s)", (teams,))
         conn.commit()
         conn.close()
-
-        bot.edit_message_text(f"💥 **{r_cat}**-এর সকল সাব-টিমের মেম্বার ও টাস্ক ডাটা স্থায়ীভাবে রিসেট করা হয়েছে!", call.message.chat.id, call.message.message_id)
+        bot.edit_message_text(f"💥 **{r_cat}**-এর সকল ডাটা স্থায়ীভাবে রিসেট করা হয়েছে!", call.message.chat.id, call.message.message_id)
 
     elif data == "do_rst_FULL_SYSTEM":
         conn = get_db_connection()
@@ -637,75 +433,55 @@ def handle_control_callbacks(call):
         cursor.execute("TRUNCATE TABLE members;")
         conn.commit()
         conn.close()
-
-        bot.edit_message_text("🔥 **ইকোসিস্টেমের সকল মেম্বার রেজিস্টার্ড ডাটা ও টাস্ক রেকর্ড সফলভাবে রিসেট (Wipe) করা হয়েছে!**\nএখন নতুন অ্যাকাউন্ট দিয়ে পুনরায় টেস্ট করতে পারবেন।", call.message.chat.id, call.message.message_id)
+        bot.edit_message_text("🔥 **ইকোসিস্টেমের সকল ডাটা সফলভাবে রিসেট (Wipe) করা হয়েছে!**", call.message.chat.id, call.message.message_id)
 
     elif data == "do_rst_no":
         bot.edit_message_text("❌ রিসেট প্রক্রিয়া বাতিল করা হয়েছে।", call.message.chat.id, call.message.message_id)
 
-# ====================================================
-# 📄 STEP HANDLERS & HELPERS
-# ====================================================
-
-# Overwrite Prompt Handler
+# STEP HANDLERS & HELPERS
 def process_overwrite_prompt(message):
-    if handle_cancel(message):
-        return
-
+    if handle_cancel(message): return
     tg_id = message.from_user.id
     p_cat = user_state.get(tg_id, {}).get("edit_prompt_cat", "Info Team")
     new_prompt = message.text.strip()
-
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute("""
-            INSERT INTO system_prompts (category, prompt_text)
-            VALUES (%s, %s)
+            INSERT INTO system_prompts (category, prompt_text) VALUES (%s, %s)
             ON CONFLICT (category) DO UPDATE SET prompt_text = EXCLUDED.prompt_text, updated_at = CURRENT_TIMESTAMP;
         """, (p_cat, new_prompt))
         conn.commit()
         conn.close()
-
         bot.send_message(message.chat.id, f"✅ **{p_cat} System Prompt Successfully Overwritten!**", reply_markup=admin_main_menu())
     except Exception as e:
         bot.send_message(message.chat.id, f"⚠️ আপডেট ব্যর্থ হয়েছে: {e}", reply_markup=admin_main_menu())
 
-# File Upload Handler
 def process_file_upload_step(message):
-    if handle_cancel(message):
-        return
-
+    if handle_cancel(message): return
     tg_id = message.from_user.id
     state = user_state.get(tg_id, {})
-
     if message.document:
         files = state.get("uploaded_files", [])
         files.append(message.document.file_name)
         state["uploaded_files"] = files
         user_state[tg_id] = state
-
         if len(files) < 2:
-            msg = bot.send_message(message.chat.id, f"✅ ১ম ফাইল পেয়েছি (`{message.document.file_name}`)।\n\nএখন ২য় ফাইলটি (100K) আপলোড করুন:", parse_mode="Markdown")
+            msg = bot.send_message(message.chat.id, f"✅ ১ম ফাইল পেয়েছি (`{message.document.file_name}`)। ২য় ফাইলটি পাঠান:", parse_mode="Markdown")
             bot.register_next_step_handler(msg, process_file_upload_step)
             return
-
-        msg = bot.send_message(message.chat.id, "✅ ফাইল আপলোড সম্পন্ন!\n\nএখন **Batch Number** প্রদান করুন:", parse_mode="Markdown")
+        msg = bot.send_message(message.chat.id, "✅ ফাইল আপলোড সম্পন্ন! **Batch Number** প্রদান করুন:", parse_mode="Markdown")
         bot.register_next_step_handler(msg, process_batch_input_step)
     else:
-        msg = bot.send_message(message.chat.id, "⚠️ অনুগ্রহ করে ফাইল বা ডকুমেন্ট আকারে ফাইলটি পাঠান:")
+        msg = bot.send_message(message.chat.id, "⚠️ অনুগ্রহ করে ফাইল বা ডকুমেন্ট আকারে পাঠান:")
         bot.register_next_step_handler(msg, process_file_upload_step)
 
-# Batch Input Handler
 def process_batch_input_step(message):
-    if handle_cancel(message):
-        return
-
+    if handle_cancel(message): return
     tg_id = message.from_user.id
     state = user_state.get(tg_id, {})
     state["batch_number"] = message.text.strip()
     user_state[tg_id] = state
-
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
         InlineKeyboardButton("Yes ✅", callback_data="blocklist_add_yes"),
@@ -713,29 +489,15 @@ def process_batch_input_step(message):
     )
     bot.send_message(message.chat.id, "❓ **Do you want to add some member to blocklist verification?**", reply_markup=markup)
 
-@bot.callback_query_handler(func=lambda call: call.data in ["blocklist_add_yes", "blocklist_add_no"])
-def handle_blocklist_prompt(call):
-    if call.data == "blocklist_add_yes":
-        msg = bot.send_message(call.message.chat.id, "📝 সদস্য/সদস্যদের নাম কমা (,) দিয়ে আলাদা করে টাইপ করুন:", reply_markup=cancel_keyboard())
-        bot.register_next_step_handler(msg, process_blocklist_names_input)
-    else:
-        show_dynamic_logic_review(call.message.chat.id, call.from_user.id)
-
-# Blocklist Verification Names Input
 def process_blocklist_names_input(message):
-    if handle_cancel(message):
-        return
-
+    if handle_cancel(message): return
     tg_id = message.from_user.id
     names = [n.strip() for n in message.text.split(",") if n.strip()]
-
-    # Checking existence in DB
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT fb_name FROM members")
     existing_members = [r[0].lower() for r in cursor.fetchall() if r[0]]
     conn.close()
-
     found_names = [n for n in names if n.lower() in existing_members]
 
     markup = InlineKeyboardMarkup(row_width=2)
@@ -743,17 +505,14 @@ def process_blocklist_names_input(message):
         InlineKeyboardButton("Yes ✅", callback_data="blocklist_add_yes"),
         InlineKeyboardButton("No ❌", callback_data="blocklist_add_no")
     )
-
     if found_names:
-        bot.send_message(message.chat.id, f"✅ The names are on file ({', '.join(found_names)})✅.\n\n**Would you like to add some more members?**", reply_markup=markup)
+        bot.send_message(message.chat.id, f"✅ The names are on file ({', '.join(found_names)}).\n\n**Add more?**", reply_markup=markup)
     else:
-        bot.send_message(message.chat.id, "⚠️ প্রদত্ত নামগুলো ডাটাবেজে পাওয়া যায়নি।\n\n**Would you like to try again?**", reply_markup=markup)
+        bot.send_message(message.chat.id, "⚠️ প্রদত্ত নামগুলো ডাটাবেজে পাওয়া যায়নি।\n\n**Try again?**", reply_markup=markup)
 
-# Dynamic Logic Review
 def show_dynamic_logic_review(chat_id, tg_id):
     state = user_state.get(tg_id, {})
     proc_cat = state.get("export_proc_cat", "Info Team")
-
     conn = get_db_connection()
     cursor = conn.cursor(cursor_factory=RealDictCursor)
     cursor.execute("SELECT * FROM dynamic_rules WHERE category = %s ORDER BY id ASC", (proc_cat,))
@@ -761,87 +520,21 @@ def show_dynamic_logic_review(chat_id, tg_id):
     conn.close()
 
     msg_text = f"⚙️ **Dynamic Logic Review ({proc_cat}):**\n\n"
-    markup = InlineKeyboardMarkup(row_width=1)
-
     for idx, r in enumerate(rules, start=1):
         msg_text += f"**{idx}. {r['rule_key']}**\n   └ {r['explanation']}\n"
-        markup.add(InlineKeyboardButton(f"📍 {idx}. {r['rule_key']}", callback_data=f"rule_click_{r['id']}"))
-
-    bot.send_message(chat_id, msg_text, parse_mode="Markdown", reply_markup=markup)
-
-# Rule Instruction Update
-def process_rule_update_text(message):
-    if handle_cancel(message):
-        return
-
-    tg_id = message.from_user.id
-    rule_id = user_state.get(tg_id, {}).get("selected_rule_id")
-    new_instruction = message.text.strip()
-
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("UPDATE dynamic_rules SET explanation = %s WHERE id = %s", (new_instruction, rule_id))
-        conn.commit()
-        conn.close()
-
-        bot.send_message(message.chat.id, "✅ **লোজিক নিয়মটি সফলভাবে আপডেট করা হয়েছে!**")
-        show_export_pdf_button(message.chat.id, tg_id)
-    except Exception as e:
-        bot.send_message(message.chat.id, f"⚠️ আপডেট এরর: {e}")
-
-def show_export_pdf_button(chat_id, tg_id):
-    markup = InlineKeyboardMarkup()
-    markup.add(InlineKeyboardButton("📄 [ Export PDF ]", callback_data="trigger_pdf_export"))
-    bot.send_message(chat_id, "📌 সব ধাপের পর্যালোচনা শেষ হয়েছে। PDF জেনারেট করতে নিচের বাটনে চাপুন:", reply_markup=markup)
-
-# PDF Generator & Sender
-def generate_and_send_pdf(chat_id, tg_id):
-    state = user_state.get(tg_id, {})
-    cat = state.get("export_proc_cat", "Info Team")
-    batch = state.get("batch_number", "N/A")
-
-    bot.send_message(chat_id, "⏳ **PDF ফাইল তৈরি হচ্ছে, অনুগ্রহ করে অপেক্ষা করুন...**")
-
-    buffer = io.BytesIO()
     
-    if REPORTLAB_AVAILABLE:
-        p = canvas.Canvas(buffer, pagesize=letter)
-        p.setFont("Helvetica-Bold", 16)
-        p.drawString(100, 750, f"KBKh Ecosystem Control Room - {cat} Report")
-        p.setFont("Helvetica", 12)
-        p.drawString(100, 730, f"Batch Number: {batch}")
-        p.drawString(100, 710, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-
-        conn = get_db_connection()
-        cursor = conn.cursor(cursor_factory=RealDictCursor)
-        cursor.execute("SELECT fb_name, unique_id, team_name FROM members WHERE team_name = ANY(%s) AND is_blocked = FALSE", (TEAMS_MAP.get(cat, []),))
-        members = cursor.fetchall()
-        conn.close()
-
-        y = 680
-        for m in members:
-            p.drawString(100, y, f"• {m['fb_name']} | ID: {m['unique_id']} | Team: {m['team_name']}")
-            y -= 20
-            if y < 100:
-                p.showPage()
-                y = 750
-
-        p.save()
-        buffer.seek(0)
-        bot.send_document(chat_id, (f"{cat}_Report_Batch_{batch}.pdf", buffer))
-    else:
-        # Fallback text document if reportlab is missing
-        text_data = f"KBKh Ecosystem Control Room - {cat} Report\nBatch: {batch}\n"
-        buffer.write(text_data.encode('utf-8'))
-        buffer.seek(0)
-        bot.send_document(chat_id, (f"{cat}_Report_Batch_{batch}.txt", buffer))
-
-    bot.send_message(chat_id, "✅ **PDF সফলভাবে তৈরি ও পাঠানো হয়েছে!**", reply_markup=admin_main_menu())
+    markup = InlineKeyboardMarkup()
+    markup.add(InlineKeyboardButton("📄 Export PDF", callback_data="trigger_pdf_export"))
+    bot.send_message(chat_id, msg_text, parse_mode="Markdown", reply_markup=markup)
 
 # 🚀 BOT LAUNCH
 if __name__ == "__main__":
     t = threading.Thread(target=run_flask)
     t.start()
     print("🤖 KBKh Central Control Room Bot is Active & Running...")
+    try:
+        bot.remove_webhook()
+    except Exception as e:
+        print(f"Webhook notice: {e}")
     bot.infinity_polling(skip_pending=True)
+    
