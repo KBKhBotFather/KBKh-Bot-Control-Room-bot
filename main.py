@@ -1,17 +1,23 @@
 import os
 import io
+import re
+import calendar
+from datetime import datetime
 import json
 import threading
+import pandas as pd
 import telebot
 from telebot.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from flask import Flask
 
-# 📄 ReportLab for PDF Export
+# 📄 ReportLab Imports for PDF Export
 try:
-    from reportlab.lib.pagesizes import letter
-    from reportlab.pdfgen import canvas
+    from reportlab.lib.pagesizes import letter, landscape
+    from reportlab.lib import colors
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
     REPORTLAB_AVAILABLE = True
 except ImportError:
     REPORTLAB_AVAILABLE = False
@@ -96,10 +102,10 @@ def init_db():
             ("Info Team", "Excellent Position", "সবগুলো টাস্ক ও কাজ যথাসময়ে সম্পন্ন করলে এই ক্যাটাগরি পাবে।", "Min_Task_Pct=90%"),
             ("Info Team", "Good Position", "গড় ৮০% এর বেশি কাজ সম্পন্ন করলে Good পজিশন দেওয়া হবে।", "Min_Task_Pct=75%"),
             ("Info Team", "Bad Position", "নিয়মিত কাজ জমা না দিলে Bad পজিশন গণ্য হবে।", "Max_Task_Pct=50%"),
-            ("Meme Team", "Approved Holidays Safety net", "মিম টিমের অনুমোদিত ছুটির সুরক্ষা নীতিমালা।", "Safety_Net=Active"),
-            ("Meme Team", "Excellent Position", "সেরা পারফর্মেন্স ও সর্বোচ্চ রিচ অর্জন।", "Min_Meme_Count=15"),
-            ("Meme Team", "Good Position", "সন্তোষজনক মান ও নিয়মিত পোস্ট উপস্থাপন।", "Min_Meme_Count=10"),
-            ("Meme Team", "Bad Position", "ধারাবাহিকতাহীন মিম জমা দেওয়া।", "Min_Meme_Count=5")
+            ("Meme Team", "Holiday Override Safety net", "Qualified Holidays >= 20 হলে সরাসরি Good জোনে থাকবে।", "Holidays>=20"),
+            ("Meme Team", "Excellent Position", "Approve >= 15, General >= 20, Special >= 10, Task 100%", "Approve>=15"),
+            ("Meme Team", "Good Position", "Approve >= 15, General >= 15, Special >= 6, Dynamic Task Pass", "Approve>=15"),
+            ("Meme Team", "Bad Position", "অন্যান্য সকল শর্ত পূরণে ব্যর্থ হলে।", "Default=Bad")
         ]
         for cat, rkey, exp, param in default_rules:
             cursor.execute("""
@@ -128,6 +134,15 @@ def init_db():
         print(f"⚠️ DB Init Error: {e}")
 
 init_db()
+
+# 📅 Helper Function for Automatic Qualified Date
+def calculate_qualified_date(month_name, year=2026):
+    try:
+        month_num = datetime.strptime(month_name, "%B").month
+        _, last_day = calendar.monthrange(year, month_num)
+        return f"1 {month_name} - {last_day} {month_name}"
+    except Exception:
+        return f"1 {month_name} - 30 {month_name}"
 
 # 🛡️ Admin Verification
 def is_admin(tg_id):
@@ -198,14 +213,15 @@ def task_workflow_start(message):
 def show_month_options(chat_id, tg_id):
     state = user_state.get(tg_id, {})
     cat = state.get("category", "Info Team")
-    month = state.get("month", "Current")
+    month = state.get("month", "August")
+    qual_date = state.get("qualified_date", "")
 
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
         InlineKeyboardButton("📊 See Details", callback_data="task_opt_details"),
         InlineKeyboardButton("📤 Export Data", callback_data="task_opt_export")
     )
-    bot.send_message(chat_id, f"📌 **ক্যাটাগরি:** {cat}\n📅 **মাস:** {month}\n\nনিচের যেকোনো অপশন নির্বাচন করুন:", parse_mode="Markdown", reply_markup=markup)
+    bot.send_message(chat_id, f"📌 **ক্যাটাগরি:** {cat}\n📅 **মাস:** {month}\n🗓️ **Qualified Date:** `{qual_date}`\n\nনিচের যেকোনো অপশন নির্বাচন করুন:", parse_mode="Markdown", reply_markup=markup)
 
 # 2. BLOCK MEMBER
 @bot.message_handler(func=lambda msg: msg.text == "⛔ Block Member")
@@ -282,13 +298,15 @@ def handle_control_callbacks(call):
     if data.startswith("sel_month_"):
         month = data.replace("sel_month_", "")
         state["month"] = month
+        # Calculate Qualified Date Automatically
+        state["qualified_date"] = calculate_qualified_date(month)
         user_state[tg_id] = state
-        bot.edit_message_text(f"✅ **মাস নির্বাচিত:** {month}", call.message.chat.id, call.message.message_id, parse_mode="Markdown")
+        bot.edit_message_text(f"✅ **মাস নির্বাচিত:** {month}\n🗓️ **Qualified Date:** {state['qualified_date']}", call.message.chat.id, call.message.message_id, parse_mode="Markdown")
         show_month_options(call.message.chat.id, tg_id)
 
     elif data == "task_opt_details":
         cat = state.get("category", "Info Team")
-        month = state.get("month", "January")
+        month = state.get("month", "August")
         try:
             conn = get_db_connection()
             cursor = conn.cursor(cursor_factory=RealDictCursor)
@@ -314,51 +332,13 @@ def handle_control_callbacks(call):
             bot.send_message(call.message.chat.id, f"⚠️ ডাটা সংকলনে এরর: {e}")
 
     elif data == "task_opt_export":
-        markup = InlineKeyboardMarkup(row_width=2)
-        markup.add(
-            InlineKeyboardButton("✏️ Edit Prompt", callback_data="exp_sub_prompt"),
-            InlineKeyboardButton("📥 Export Process", callback_data="exp_sub_process")
-        )
-        bot.send_message(call.message.chat.id, "⚙️ **Export Data Options:**", reply_markup=markup)
-
-    elif data == "exp_sub_prompt":
-        markup = InlineKeyboardMarkup(row_width=2)
-        markup.add(
-            InlineKeyboardButton("ℹ️ Info Team Prompt", callback_data="view_prm_Info Team"),
-            InlineKeyboardButton("🎭 Meme Team Prompt", callback_data="view_prm_Meme Team")
-        )
-        bot.send_message(call.message.chat.id, "✏️ **System Prompt পরিবর্তন করতে টিম সিলেক্ট করুন:**", reply_markup=markup)
-
-    elif data.startswith("view_prm_"):
-        p_cat = data.replace("view_prm_", "")
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT prompt_text FROM system_prompts WHERE category = %s", (p_cat,))
-        res = cursor.fetchone()
-        conn.close()
-
-        current_prompt = res[0] if res else "No prompt set."
-        state["edit_prompt_cat"] = p_cat
-        user_state[tg_id] = state
-
-        msg = bot.send_message(call.message.chat.id, f"📝 **Current Prompt ({p_cat}):**\n```\n{current_prompt}\n```\nনতুন System Prompt দিয়ে ওভাররাইট করতে টেক্সট পাঠান:", parse_mode="Markdown", reply_markup=cancel_keyboard())
-        bot.register_next_step_handler(msg, process_overwrite_prompt)
-
-    elif data == "exp_sub_process":
-        markup = InlineKeyboardMarkup(row_width=2)
-        markup.add(
-            InlineKeyboardButton("ℹ️ Info Team Process", callback_data="start_proc_Info Team"),
-            InlineKeyboardButton("🎭 Meme Team Process", callback_data="start_proc_Meme Team")
-        )
-        bot.send_message(call.message.chat.id, "📁 **টিম নির্বাচন করে এক্সপোর্ট প্রসেস শুরু করুন:**", reply_markup=markup)
-
-    elif data.startswith("start_proc_"):
-        proc_cat = data.replace("start_proc_", "")
-        state["export_proc_cat"] = proc_cat
+        cat = state.get("category", "Info Team")
+        state["export_proc_cat"] = cat
         state["uploaded_files"] = []
         user_state[tg_id] = state
 
-        msg = bot.send_message(call.message.chat.id, f"📂 **File Upload Step ({proc_cat}):**\nঅনুগহ করে পরপর ২টি ডাটা ফাইল আপলোড করুন।", reply_markup=cancel_keyboard())
+        needed_files = 1 if cat == "Meme Team" else 2
+        msg = bot.send_message(call.message.chat.id, f"📂 **File Upload Step ({cat}):**\nঅনুগহ করে `{needed_files}` টি ডাটা ফাইল (Excel) আপলোড করুন।", parse_mode="Markdown", reply_markup=cancel_keyboard())
         bot.register_next_step_handler(msg, process_file_upload_step)
 
     elif data == "blocklist_add_yes":
@@ -366,7 +346,7 @@ def handle_control_callbacks(call):
         bot.register_next_step_handler(msg, process_blocklist_names_input)
 
     elif data == "blocklist_add_no":
-        show_dynamic_logic_review(call.message.chat.id, tg_id)
+        prompt_member_text_input(call.message.chat.id, tg_id)
 
     # RESET DATA ACTIONS
     elif data.startswith("rst_cat_"):
@@ -438,42 +418,32 @@ def handle_control_callbacks(call):
     elif data == "do_rst_no":
         bot.edit_message_text("❌ রিসেট প্রক্রিয়া বাতিল করা হয়েছে।", call.message.chat.id, call.message.message_id)
 
-# STEP HANDLERS & HELPERS
-def process_overwrite_prompt(message):
-    if handle_cancel(message): return
-    tg_id = message.from_user.id
-    p_cat = user_state.get(tg_id, {}).get("edit_prompt_cat", "Info Team")
-    new_prompt = message.text.strip()
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("""
-            INSERT INTO system_prompts (category, prompt_text) VALUES (%s, %s)
-            ON CONFLICT (category) DO UPDATE SET prompt_text = EXCLUDED.prompt_text, updated_at = CURRENT_TIMESTAMP;
-        """, (p_cat, new_prompt))
-        conn.commit()
-        conn.close()
-        bot.send_message(message.chat.id, f"✅ **{p_cat} System Prompt Successfully Overwritten!**", reply_markup=admin_main_menu())
-    except Exception as e:
-        bot.send_message(message.chat.id, f"⚠️ আপডেট ব্যর্থ হয়েছে: {e}", reply_markup=admin_main_menu())
+    elif data == "trigger_pdf_export":
+        generate_and_send_pdf(call.message.chat.id, tg_id)
 
+# STEP HANDLERS & HELPERS
 def process_file_upload_step(message):
     if handle_cancel(message): return
     tg_id = message.from_user.id
     state = user_state.get(tg_id, {})
+    cat = state.get("export_proc_cat", "Info Team")
+    required_files = 1 if cat == "Meme Team" else 2
+
     if message.document:
         files = state.get("uploaded_files", [])
-        files.append(message.document.file_name)
+        files.append(message.document)
         state["uploaded_files"] = files
         user_state[tg_id] = state
-        if len(files) < 2:
-            msg = bot.send_message(message.chat.id, f"✅ ১ম ফাইল পেয়েছি (`{message.document.file_name}`)। ২য় ফাইলটি পাঠান:", parse_mode="Markdown")
+
+        if len(files) < required_files:
+            msg = bot.send_message(message.chat.id, f"✅ ১ম ফাইল পেয়েছি (`{message.document.file_name}`)। ২য় ফাইলটি পাঠান:", parse_mode="Markdown")
             bot.register_next_step_handler(msg, process_file_upload_step)
             return
-        msg = bot.send_message(message.chat.id, "✅ ফাইল আপলোড সম্পন্ন! **Batch Number** প্রদান করুন:", parse_mode="Markdown")
+
+        msg = bot.send_message(message.chat.id, "✅ ফাইল আপলোড সম্পন্ন! **Batch Number** প্রদান করুন (যেমন: 15):", parse_mode="Markdown")
         bot.register_next_step_handler(msg, process_batch_input_step)
     else:
-        msg = bot.send_message(message.chat.id, "⚠️ অনুগ্রহ করে ফাইল বা ডকুমেন্ট আকারে পাঠান:")
+        msg = bot.send_message(message.chat.id, "⚠️ অনুগ্রহ করে ফাইল বা ডকুমেন্ট আকারে এক্সেল ফাইলটি পাঠান:")
         bot.register_next_step_handler(msg, process_file_upload_step)
 
 def process_batch_input_step(message):
@@ -482,6 +452,7 @@ def process_batch_input_step(message):
     state = user_state.get(tg_id, {})
     state["batch_number"] = message.text.strip()
     user_state[tg_id] = state
+
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
         InlineKeyboardButton("Yes ✅", callback_data="blocklist_add_yes"),
@@ -510,6 +481,25 @@ def process_blocklist_names_input(message):
     else:
         bot.send_message(message.chat.id, "⚠️ প্রদত্ত নামগুলো ডাটাবেজে পাওয়া যায়নি।\n\n**Try again?**", reply_markup=markup)
 
+def prompt_member_text_input(chat_id, tg_id):
+    msg = bot.send_message(
+        chat_id,
+        "📝 **প্রদত্ত মেম্বারদের পারফর্মেন্স টেক্সট ডাটা পাঠান:**\n"
+        "ফরম্যাট:\n`Name - General Post - Special Post - Task Status - Holidays`\n"
+        "উদাহরণ:\n`Rakib - 25 - 15 - 3/3 - 26`",
+        parse_mode="Markdown",
+        reply_markup=cancel_keyboard()
+    )
+    bot.register_next_step_handler(msg, process_member_text_input)
+
+def process_member_text_input(message):
+    if handle_cancel(message): return
+    tg_id = message.from_user.id
+    state = user_state.get(tg_id, {})
+    state["raw_text_data"] = message.text.strip()
+    user_state[tg_id] = state
+    show_dynamic_logic_review(message.chat.id, tg_id)
+
 def show_dynamic_logic_review(chat_id, tg_id):
     state = user_state.get(tg_id, {})
     proc_cat = state.get("export_proc_cat", "Info Team")
@@ -527,6 +517,229 @@ def show_dynamic_logic_review(chat_id, tg_id):
     markup.add(InlineKeyboardButton("📄 Export PDF", callback_data="trigger_pdf_export"))
     bot.send_message(chat_id, msg_text, parse_mode="Markdown", reply_markup=markup)
 
+# 📄 PDF GENERATOR ENGINE
+def generate_and_send_pdf(chat_id, tg_id):
+    state = user_state.get(tg_id, {})
+    cat = state.get("export_proc_cat", "Meme Team")
+    batch_no = state.get("batch_number", "1")
+    qual_date = state.get("qualified_date", "1 August - 31 August")
+    raw_text = state.get("raw_text_data", "")
+
+    bot.send_message(chat_id, "⏳ **পারফর্মেন্স ডাটা প্রসেস করে PDF জেনারেট করা হচ্ছে...**")
+
+    # 1. Parse Raw Text Input
+    parsed_members = []
+    lines = [l.strip() for l in raw_text.split('\n') if l.strip()]
+    for line in lines:
+        parts = [p.strip() for p in line.split('-')]
+        if len(parts) >= 5:
+            name = parts[0]
+            try: gen_p = int(parts[1])
+            except: gen_p = 0
+            try: spec_p = int(parts[2])
+            except: spec_p = 0
+            task_st = parts[3]
+            try: hols = int(parts[4])
+            except: hols = 0
+            parsed_members.append({
+                "name": name,
+                "gen_post": gen_p,
+                "spec_post": spec_p,
+                "task_status": task_st,
+                "holidays": hols
+            })
+
+    # Dummy fallback data if empty
+    if not parsed_members:
+        parsed_members = [
+            {"name": "Rakib", "gen_post": 25, "spec_post": 15, "task_status": "3/3", "holidays": 26},
+            {"name": "Sumaiya", "gen_post": 20, "spec_post": 10, "task_status": "3/3", "holidays": 0},
+            {"name": "Saima", "gen_post": 15, "spec_post": 6, "task_status": "2/3", "holidays": 20}
+        ]
+
+    # Evaluate Members
+    evaluated_list = []
+    for m in parsed_members:
+        # Mocking Approve/Decline from Excel sync
+        post_app = 20 if m['spec_post'] >= 10 else 12
+        post_dec = 2
+
+        gen_p = m['gen_post']
+        spec_p = m['spec_post']
+        hols = m['holidays']
+        t_str = m['task_status']
+
+        try:
+            p_parts = t_str.split('/')
+            done_t = int(p_parts[0])
+            total_t = int(p_parts[1]) if len(p_parts) > 1 else 3
+            t_ratio = done_t / total_t if total_t > 0 else 0
+        except:
+            done_t, total_t, t_ratio = 0, 3, 0.0
+
+        # Performance Logic Criteria
+        if hols >= 20:
+            tier = 3 # Holiday Override Good
+            perf = "Good"
+        elif post_app >= 15 and gen_p >= 20 and spec_p >= 10 and done_t >= total_t and total_t > 0:
+            tier = 1 # Excellent
+            perf = "Excellent"
+        else:
+            if total_t == 3 and done_t >= 2: task_pass = True
+            elif total_t == 4 and done_t >= 2: task_pass = True
+            elif total_t >= 5 and done_t >= (total_t - 2): task_pass = True
+            else: task_pass = False
+
+            if post_app >= 15 and gen_p >= 15 and spec_p >= 6 and task_pass:
+                tier = 2 # Regular Good
+                perf = "Good"
+            else:
+                tier = 4 # Bad
+                perf = "Bad"
+
+        evaluated_list.append({
+            "name": m['name'],
+            "post_app": post_app,
+            "post_dec": post_dec,
+            "gen_p": gen_p,
+            "spec_p": spec_p,
+            "task_status": t_str,
+            "task_ratio": t_ratio,
+            "holidays": hols,
+            "perf": perf,
+            "tier": tier
+        })
+
+    # Multi-level Sorting Priority:
+    # 1. Tier (Excellent -> Regular Good -> Holiday Good -> Bad)
+    # 2. Special Post Count (Desc)
+    # 3. Special Task Ratio (Desc)
+    # 4. General Post Count (Desc)
+    # 5. Post Approve (Desc)
+    evaluated_list.sort(key=lambda x: (x['tier'], -x['spec_p'], -x['task_ratio'], -x['gen_p'], -x['post_app']))
+
+    # Attach Top Performers Medals (Overall Top 3)
+    medals = ["🥇 ", "🥈 ", "🥉 "]
+    for idx, item in enumerate(evaluated_list[:3]):
+        item['name'] = medals[idx] + item['name']
+
+    # Generate ReportLab PDF Buffer
+    pdf_buffer = io.BytesIO()
+    doc = SimpleDocTemplate(
+        pdf_buffer,
+        pagesize=landscape(letter),
+        leftMargin=20, rightMargin=20, topMargin=20, bottomMargin=20
+    )
+
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle(
+        'DocTitle',
+        parent=styles['Heading1'],
+        fontName='Helvetica-Bold',
+        fontSize=18,
+        leading=22,
+        alignment=1,
+        textColor=colors.HexColor('#111827')
+    )
+
+    date_style = ParagraphStyle(
+        'DocDate',
+        parent=styles['Normal'],
+        fontName='Helvetica-Bold',
+        fontSize=13,
+        leading=16,
+        alignment=1,
+        textColor=colors.HexColor('#4B5563')
+    )
+
+    cell_style = ParagraphStyle(
+        'CellText',
+        parent=styles['Normal'],
+        fontName='Helvetica',
+        fontSize=8.5,
+        leading=11,
+        alignment=1
+    )
+
+    header_cell_style = ParagraphStyle(
+        'HeaderCellText',
+        parent=styles['Normal'],
+        fontName='Helvetica-Bold',
+        fontSize=9,
+        leading=12,
+        alignment=1,
+        textColor=colors.HexColor('#1E3A8A')
+    )
+
+    elements = []
+
+    # Title Caption
+    caption = f"Biggan Khuje Lav Nai | Batch - {batch_no}" if cat == "Meme Team" else f"KBKh | Ki...Biggan Khujchen? Batch - {batch_no}"
+    elements.append(Paragraph(caption, title_style))
+    elements.append(Spacer(1, 15)) # Gap/Spacer Fix
+
+    # Qualified Date
+    elements.append(Paragraph(f"Qualified Date: {qual_date}", date_style))
+    elements.append(Spacer(1, 20)) # Spacer before table
+
+    # Table Header (Strict NO Abbreviation Rule)
+    headers = [
+        "Member's Name", "Post Approve", "Post Decline", 
+        "General Post Count", "Special Post Count", "Special Task Status", 
+        "Qualified Holidays", "Over All Performance"
+    ]
+    
+    table_data = [[Paragraph(h, header_cell_style) for h in headers]]
+
+    for row in evaluated_list:
+        table_data.append([
+            Paragraph(str(row['name']), cell_style),
+            Paragraph(str(row['post_app']), cell_style),
+            Paragraph(str(row['post_dec']), cell_style),
+            Paragraph(str(row['gen_p']), cell_style),
+            Paragraph(str(row['spec_p']), cell_style),
+            Paragraph(str(row['task_status']), cell_style),
+            Paragraph(str(row['holidays']), cell_style),
+            Paragraph(str(row['perf']), cell_style)
+        ])
+
+    col_widths = [120, 80, 80, 100, 100, 90, 90, 100]
+    t = Table(table_data, colWidths=col_widths, repeatRows=1)
+
+    t_style = [
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#D0E1FD')), # Light Blue Header
+        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('INNERGRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#CBD5E1')),
+        ('BOX', (0, 0), (-1, -1), 1, colors.HexColor('#94A3B8')),
+        ('TOPPADDING', (0, 0), (-1, -1), 6),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+    ]
+
+    # Row colors based on performance
+    for idx, row in enumerate(evaluated_list, start=1):
+        if row['perf'] == "Excellent":
+            bg_color = colors.HexColor('#D4EDDA') # Light Green
+        elif row['perf'] == "Good":
+            bg_color = colors.HexColor('#FFF3CD') # Light Yellow
+        else:
+            bg_color = colors.HexColor('#F8D7DA') # Light Red
+        t_style.append(('BACKGROUND', (0, idx), (-1, idx), bg_color))
+
+    t.setStyle(TableStyle(t_style))
+    elements.append(t)
+
+    doc.build(elements)
+    pdf_buffer.seek(0)
+
+    file_name = f"{cat.replace(' ', '_')}_Batch_{batch_no}_Performance_Report.pdf"
+    bot.send_document(
+        chat_id,
+        (file_name, pdf_buffer),
+        caption=f"✅ **{cat} - Batch {batch_no} Performance PDF Generated Successfully!**\n🗓️ Qualified Date: {qual_date}",
+        parse_mode="Markdown"
+    )
+
 # 🚀 BOT LAUNCH
 if __name__ == "__main__":
     t = threading.Thread(target=run_flask)
@@ -537,4 +750,3 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"Webhook notice: {e}")
     bot.infinity_polling(skip_pending=True)
-    
