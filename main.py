@@ -27,6 +27,9 @@ BOT_TOKEN = (os.environ.get("BOT_TOKEN") or os.environ.get("TOKEN") or "").strip
 DB_URI = (os.environ.get("DB_URI") or os.environ.get("DATABASE_URL") or os.environ.get("DATABASE_URI") or "").strip()
 ADMIN_CHAT_ID = (os.environ.get("ADMIN_CHAT_ID") or os.environ.get("ADMIN_ID") or "").strip()
 
+if not BOT_TOKEN:
+    print("❌ ERROR: BOT_TOKEN is missing in Render Environment Variables!")
+
 bot = telebot.TeleBot(BOT_TOKEN)
 
 # 🌐 Flask Server for Render Keep-Alive
@@ -131,7 +134,7 @@ def init_db():
         conn.close()
         print("✅ Central Control Room Database Synced Successfully!")
     except Exception as e:
-        print(f"⚠️ DB Init Error: {e}")
+        print(f"⚠️ DB Init Warning/Error: {e}")
 
 init_db()
 
@@ -144,7 +147,7 @@ def calculate_qualified_date(month_name, year=2026):
     except Exception:
         return f"1 {month_name} - 30 {month_name}"
 
-# 🛡️ Admin Verification
+# 🛡️ Admin Verification (Fixes Mismatch Issue)
 def is_admin(tg_id):
     if not ADMIN_CHAT_ID:
         return True
@@ -175,12 +178,20 @@ def cancel_keyboard():
     markup.add(KeyboardButton("❌ Cancel"))
     return markup
 
-# 📌 /start Command
+# 📌 /start Command Handler
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     tg_id = message.from_user.id
+    print(f"📩 Received /start from Telegram User ID: {tg_id}")
+
     if not is_admin(tg_id):
-        bot.send_message(message.chat.id, "❌ **আপনার এই বটে অ্যাক্সেস করার অনুমতি নেই!**")
+        # Admin ID না মিললে ইউজারকে সরাসরি তার আসল ID জানিয়ে দেবে
+        unauth_msg = (
+            f"❌ **অনুমতি নেই!**\n\n"
+            f"আপনার Telegram Chat ID: `{tg_id}`\n"
+            f"Render Environment Variables-এ `ADMIN_CHAT_ID` হিসেবে `{tg_id}` সেট করুন।"
+        )
+        bot.send_message(message.chat.id, unauth_msg, parse_mode="Markdown")
         return
 
     welcome_text = (
@@ -298,7 +309,6 @@ def handle_control_callbacks(call):
     if data.startswith("sel_month_"):
         month = data.replace("sel_month_", "")
         state["month"] = month
-        # Calculate Qualified Date Automatically
         state["qualified_date"] = calculate_qualified_date(month)
         user_state[tg_id] = state
         bot.edit_message_text(f"✅ **মাস নির্বাচিত:** {month}\n🗓️ **Qualified Date:** {state['qualified_date']}", call.message.chat.id, call.message.message_id, parse_mode="Markdown")
@@ -549,7 +559,6 @@ def generate_and_send_pdf(chat_id, tg_id):
                 "holidays": hols
             })
 
-    # Dummy fallback data if empty
     if not parsed_members:
         parsed_members = [
             {"name": "Rakib", "gen_post": 25, "spec_post": 15, "task_status": "3/3", "holidays": 26},
@@ -557,10 +566,8 @@ def generate_and_send_pdf(chat_id, tg_id):
             {"name": "Saima", "gen_post": 15, "spec_post": 6, "task_status": "2/3", "holidays": 20}
         ]
 
-    # Evaluate Members
     evaluated_list = []
     for m in parsed_members:
-        # Mocking Approve/Decline from Excel sync
         post_app = 20 if m['spec_post'] >= 10 else 12
         post_dec = 2
 
@@ -577,12 +584,11 @@ def generate_and_send_pdf(chat_id, tg_id):
         except:
             done_t, total_t, t_ratio = 0, 3, 0.0
 
-        # Performance Logic Criteria
         if hols >= 20:
-            tier = 3 # Holiday Override Good
+            tier = 3
             perf = "Good"
         elif post_app >= 15 and gen_p >= 20 and spec_p >= 10 and done_t >= total_t and total_t > 0:
-            tier = 1 # Excellent
+            tier = 1
             perf = "Excellent"
         else:
             if total_t == 3 and done_t >= 2: task_pass = True
@@ -591,10 +597,10 @@ def generate_and_send_pdf(chat_id, tg_id):
             else: task_pass = False
 
             if post_app >= 15 and gen_p >= 15 and spec_p >= 6 and task_pass:
-                tier = 2 # Regular Good
+                tier = 2
                 perf = "Good"
             else:
-                tier = 4 # Bad
+                tier = 4
                 perf = "Bad"
 
         evaluated_list.append({
@@ -610,20 +616,12 @@ def generate_and_send_pdf(chat_id, tg_id):
             "tier": tier
         })
 
-    # Multi-level Sorting Priority:
-    # 1. Tier (Excellent -> Regular Good -> Holiday Good -> Bad)
-    # 2. Special Post Count (Desc)
-    # 3. Special Task Ratio (Desc)
-    # 4. General Post Count (Desc)
-    # 5. Post Approve (Desc)
     evaluated_list.sort(key=lambda x: (x['tier'], -x['spec_p'], -x['task_ratio'], -x['gen_p'], -x['post_app']))
 
-    # Attach Top Performers Medals (Overall Top 3)
     medals = ["🥇 ", "🥈 ", "🥉 "]
     for idx, item in enumerate(evaluated_list[:3]):
         item['name'] = medals[idx] + item['name']
 
-    # Generate ReportLab PDF Buffer
     pdf_buffer = io.BytesIO()
     doc = SimpleDocTemplate(
         pdf_buffer,
@@ -673,16 +671,13 @@ def generate_and_send_pdf(chat_id, tg_id):
 
     elements = []
 
-    # Title Caption
     caption = f"Biggan Khuje Lav Nai | Batch - {batch_no}" if cat == "Meme Team" else f"KBKh | Ki...Biggan Khujchen? Batch - {batch_no}"
     elements.append(Paragraph(caption, title_style))
-    elements.append(Spacer(1, 15)) # Gap/Spacer Fix
+    elements.append(Spacer(1, 15))
 
-    # Qualified Date
     elements.append(Paragraph(f"Qualified Date: {qual_date}", date_style))
-    elements.append(Spacer(1, 20)) # Spacer before table
+    elements.append(Spacer(1, 20))
 
-    # Table Header (Strict NO Abbreviation Rule)
     headers = [
         "Member's Name", "Post Approve", "Post Decline", 
         "General Post Count", "Special Post Count", "Special Task Status", 
@@ -707,7 +702,7 @@ def generate_and_send_pdf(chat_id, tg_id):
     t = Table(table_data, colWidths=col_widths, repeatRows=1)
 
     t_style = [
-        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#D0E1FD')), # Light Blue Header
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#D0E1FD')),
         ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
         ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
         ('INNERGRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#CBD5E1')),
@@ -716,14 +711,13 @@ def generate_and_send_pdf(chat_id, tg_id):
         ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
     ]
 
-    # Row colors based on performance
     for idx, row in enumerate(evaluated_list, start=1):
         if row['perf'] == "Excellent":
-            bg_color = colors.HexColor('#D4EDDA') # Light Green
+            bg_color = colors.HexColor('#D4EDDA')
         elif row['perf'] == "Good":
-            bg_color = colors.HexColor('#FFF3CD') # Light Yellow
+            bg_color = colors.HexColor('#FFF3CD')
         else:
-            bg_color = colors.HexColor('#F8D7DA') # Light Red
+            bg_color = colors.HexColor('#F8D7DA')
         t_style.append(('BACKGROUND', (0, idx), (-1, idx), bg_color))
 
     t.setStyle(TableStyle(t_style))
@@ -740,13 +734,19 @@ def generate_and_send_pdf(chat_id, tg_id):
         parse_mode="Markdown"
     )
 
-# 🚀 BOT LAUNCH
+# 🚀 BOT LAUNCH WITH SAFE WEBHook CLEAR & POLLING
 if __name__ == "__main__":
-    t = threading.Thread(target=run_flask)
+    print("🌐 Starting Keep-Alive Flask Server...")
+    t = threading.Thread(target=run_flask, daemon=True)
     t.start()
-    print("🤖 KBKh Central Control Room Bot is Active & Running...")
+    
+    print("🤖 Clearing previous Webhooks & Starting Telegram Bot...")
     try:
         bot.remove_webhook()
-    except Exception as e:
-        print(f"Webhook notice: {e}")
-    bot.infinity_polling(skip_pending=True)
+    except Exception as err:
+        print(f"⚠️ Webhook Remove Notice: {err}")
+
+    print("⚡ KBKh Central Control Room Bot is Active & Listening for Messages...")
+    
+    # Infinity polling with conflict handling
+    bot.infinity_polling(skip_pending=True, timeout=60, long_polling_timeout=60)
