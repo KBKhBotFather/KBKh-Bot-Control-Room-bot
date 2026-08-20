@@ -68,9 +68,9 @@ def init_db():
         """)
 
         cursor.execute("""
-            CREATE TABLE IF NOT EXISTS system_prompts (
+            CREATE TABLE IF NOT EXISTS dynamic_logic (
                 category TEXT PRIMARY KEY,
-                prompt_text TEXT,
+                holiday_limit INT DEFAULT 20,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         """)
@@ -86,6 +86,13 @@ def init_db():
                 article_count INT DEFAULT 0,
                 UNIQUE(telegram_id, month)
             );
+        """)
+
+        # Default logic settings
+        cursor.execute("""
+            INSERT INTO dynamic_logic (category, holiday_limit) 
+            VALUES ('Info Team', 20), ('Meme Team', 20)
+            ON CONFLICT (category) DO NOTHING;
         """)
 
         conn.commit()
@@ -122,6 +129,18 @@ DEFAULT_BLOCKLIST = [
 
 user_state = {}
 
+# 📊 Get Dynamic Holiday Limit
+def get_holiday_limit(category):
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT holiday_limit FROM dynamic_logic WHERE category = %s;", (category,))
+        res = cursor.fetchone()
+        conn.close()
+        return res[0] if res else 20
+    except Exception:
+        return 20
+
 # 🎹 Keyboard Generators
 def admin_main_menu():
     markup = ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
@@ -138,7 +157,7 @@ def get_month_keyboard():
     markup = InlineKeyboardMarkup(row_width=3)
     buttons = [InlineKeyboardButton(m, callback_data=f"sel_month_{m}") for m in MONTHS]
     markup.add(*buttons)
-    markup.add(InlineKeyboardButton("Cancel", callback_data="cmd_cancel"))
+    markup.add(InlineKeyboardButton("Cancel", callback_data="ask_cancel"))
     return markup
 
 def get_task_options_keyboard():
@@ -149,19 +168,19 @@ def get_task_options_keyboard():
     )
     markup.add(
         InlineKeyboardButton("Back", callback_data="back_to_month"),
-        InlineKeyboardButton("Cancel", callback_data="cmd_cancel")
+        InlineKeyboardButton("Cancel", callback_data="ask_cancel")
     )
     return markup
 
 def get_export_options_keyboard():
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
-        InlineKeyboardButton("Edit Prompt", callback_data="exp_sub_prompt"),
+        InlineKeyboardButton("Edit Logic", callback_data="exp_sub_logic"),
         InlineKeyboardButton("Export Process", callback_data="exp_sub_process")
     )
     markup.add(
         InlineKeyboardButton("Back", callback_data="back_to_task_opts"),
-        InlineKeyboardButton("Cancel", callback_data="cmd_cancel")
+        InlineKeyboardButton("Cancel", callback_data="ask_cancel")
     )
     return markup
 
@@ -173,30 +192,19 @@ def get_logic_panel_keyboard():
         InlineKeyboardButton("Good Position", callback_data="logic_opt_good"),
         InlineKeyboardButton("Bad Position", callback_data="logic_opt_bad")
     )
-    markup.add(
-        InlineKeyboardButton("Export PDF", callback_data="logic_do_export"),
-        InlineKeyboardButton("Back", callback_data="back_to_export_opts"),
-        InlineKeyboardButton("Cancel", callback_data="cmd_cancel")
-    )
+    # Export PDF and Cancel on same row
+    row = [
+        InlineKeyboardButton("Export PDF 📄", callback_data="logic_do_export"),
+        InlineKeyboardButton("Cancel ❌", callback_data="ask_cancel")
+    ]
+    markup.row(*row)
     return markup
 
-def get_back_cancel_keyboard(back_cb="back_to_task_opts"):
+def get_cancel_confirm_keyboard():
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
-        InlineKeyboardButton("Back", callback_data=back_cb),
-        InlineKeyboardButton("Cancel", callback_data="cmd_cancel")
-    )
-    return markup
-
-def get_yes_no_keyboard(yes_cb, no_cb, back_cb="back_to_task_opts"):
-    markup = InlineKeyboardMarkup(row_width=2)
-    markup.add(
-        InlineKeyboardButton("Yes✅", callback_data=yes_cb),
-        InlineKeyboardButton("No❌", callback_data=no_cb)
-    )
-    markup.add(
-        InlineKeyboardButton("Back", callback_data=back_cb),
-        InlineKeyboardButton("Cancel", callback_data="cmd_cancel")
+        InlineKeyboardButton("Yes✅", callback_data="confirm_cancel_yes"),
+        InlineKeyboardButton("No❌", callback_data="confirm_cancel_no")
     )
     return markup
 
@@ -206,8 +214,8 @@ def get_qualified_date(month_name, year=2026):
     last_day = calendar.monthrange(year, m_num)[1]
     return f"1{month_name} - {last_day}{month_name}"
 
-# 📄 PDF Generator Functions
-def generate_info_team_pdf(excel_800k_bytes, excel_100k_bytes, batch_number, qualified_date, output_pdf_path="Info_Team_Report.pdf"):
+# 📄 Info Team PDF Generator Logic
+def generate_info_team_pdf(excel_800k_bytes, excel_100k_bytes, batch_number, qualified_date, holiday_limit=20, output_pdf_path="Info_Team_Report.pdf"):
     df_800 = pd.read_excel(io.BytesIO(excel_800k_bytes)) if excel_800k_bytes else pd.DataFrame()
     df_100 = pd.read_excel(io.BytesIO(excel_100k_bytes)) if excel_100k_bytes else pd.DataFrame()
     
@@ -240,7 +248,7 @@ def generate_info_team_pdf(excel_800k_bytes, excel_100k_bytes, batch_number, qua
             
         processed.append({
             'name': name, 'g1_app': g1_a, 'g1_dec': g1_d, 'g2_app': g2_a, 'g2_dec': g2_d,
-            'tot_app': tot_app, 'tot_dec': tot_dec, 'task_ratio': '0/3',
+            'tot_app': tot_app, 'tot_dec': tot_dec, 'task_ratio': '0/0',
             'holidays': '0 Days', 'articles': 0, 'perf': cat, 'tier': tier
         })
         
@@ -289,6 +297,74 @@ def generate_info_team_pdf(excel_800k_bytes, excel_100k_bytes, batch_number, qua
     doc.build(story)
     return output_pdf_path
 
+# 🎭 Meme Team PDF Generator Logic (Single File Input)
+def generate_meme_team_pdf(excel_bytes, batch_number, qualified_date, holiday_limit=20, output_pdf_path="Meme_Team_Report.pdf"):
+    df = pd.read_excel(io.BytesIO(excel_bytes)) if excel_bytes else pd.DataFrame()
+    
+    if not df.empty:
+        n_col = [c for c in df.columns if 'name' in str(c).lower() or 'member' in str(c).lower()][0]
+        a_col = [c for c in df.columns if 'approve' in str(c).lower()][0]
+        d_col = [c for c in df.columns if 'declin' in str(c).lower()][0]
+        df = df[[n_col, a_col, d_col]].copy()
+        df.columns = ['name', 'app', 'dec']
+        df['name'] = df['name'].astype(str).str.strip()
+    else:
+        df = pd.DataFrame(columns=['name', 'app', 'dec'])
+
+    blocklist = set([x.lower() for x in DEFAULT_BLOCKLIST])
+    df = df[~df['name'].str.lower().isin(blocklist)]
+
+    processed = []
+    for _, row in df.iterrows():
+        name = row['name']
+        app = int(row['app'])
+        dec = int(row['dec'])
+        cat = "Excellent" if app >= 15 else ("Good" if app >= 8 else "Bad")
+        tier = 1 if cat == "Excellent" else (2 if cat == "Good" else 3)
+        processed.append({
+            'name': name, 'app': app, 'dec': dec, 'task_ratio': '0/0',
+            'holidays': '0 Days', 'perf': cat, 'tier': tier
+        })
+
+    processed.sort(key=lambda x: (x['tier'], -x['app']))
+
+    doc = SimpleDocTemplate(output_pdf_path, pagesize=landscape(letter), leftMargin=20, rightMargin=20, topMargin=20, bottomMargin=20)
+    styles = getSampleStyleSheet()
+
+    story = [
+        Paragraph(f"KBKh Meme Team | Performance Report Batch - {batch_number}", ParagraphStyle('T', parent=styles['Normal'], fontName='Helvetica-Bold', fontSize=16, alignment=1)),
+        Spacer(1, 10),
+        Paragraph(f"Qualified Date: {qualified_date}", ParagraphStyle('S', parent=styles['Normal'], fontName='Helvetica', fontSize=10, alignment=1)),
+        Spacer(1, 15)
+    ]
+
+    c_style = ParagraphStyle('C', parent=styles['Normal'], fontName='Helvetica', fontSize=9, alignment=1)
+    c_bold = ParagraphStyle('B', parent=styles['Normal'], fontName='Helvetica-Bold', fontSize=9, alignment=1)
+
+    table_data = [
+        [Paragraph("Member's Name", c_bold), Paragraph("Approved Posts", c_bold), Paragraph("Declined Posts", c_bold), Paragraph("Task Status", c_bold), Paragraph("Holidays Taken", c_bold), Paragraph("Overall Performance", c_bold)]
+    ]
+
+    bg_colors = []
+    for item in processed:
+        bg = colors.HexColor('#d4edda') if item['perf'] == 'Excellent' else (colors.HexColor('#fff3cd') if item['perf'] == 'Good' else colors.HexColor('#f8d7da'))
+        bg_colors.append(bg)
+        table_data.append([
+            Paragraph(item['name'], c_style), Paragraph(str(item['app']), c_style), Paragraph(str(item['dec']), c_style),
+            Paragraph(item['task_ratio'], c_style), Paragraph(item['holidays'], c_style), Paragraph(item['perf'], c_bold)
+        ])
+
+    t = Table(table_data, repeatRows=1)
+    ts = [
+        ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#e3f2fd')),
+        ('GRID', (0,0), (-1,-1), 0.5, colors.grey), ('ALIGN', (0,0), (-1,-1), 'CENTER'), ('VALIGN', (0,0), (-1,-1), 'MIDDLE')
+    ]
+    for idx, bg in enumerate(bg_colors): ts.append(('BACKGROUND', (0, idx+1), (-1, idx+1), bg))
+    t.setStyle(TableStyle(ts))
+    story.append(t)
+    doc.build(story)
+    return output_pdf_path
+
 # 📌 Telegram Bot Handlers
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
@@ -311,6 +387,63 @@ def task_workflow_start(message):
     user_state[message.from_user.id] = {"category": category}
     bot.send_message(message.chat.id, "Select Month", reply_markup=get_month_keyboard())
 
+# ⛔ Clean Block Member Flow
+@bot.message_handler(func=lambda msg: msg.text == "⛔ Block Member")
+def block_member_start(message):
+    if not is_admin(message.from_user.id): return
+    
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton("Info Team", callback_data="block_select_info"),
+        InlineKeyboardButton("Meme Team", callback_data="block_select_meme")
+    )
+    markup.add(InlineKeyboardButton("Cancel", callback_data="ask_cancel"))
+    bot.send_message(message.chat.id, "Select Team to Manage Members:", reply_markup=markup)
+
+# ✅ Clean Unblock Flow
+@bot.message_handler(func=lambda msg: msg.text == "✅ Unblock")
+def unblock_member_start(message):
+    if not is_admin(message.from_user.id): return
+    render_unblock_list(message.chat.id, message.from_user.id)
+
+def render_unblock_list(chat_id, tg_id, message_id=None):
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        cursor.execute("SELECT telegram_id, fb_name, team_name FROM members WHERE is_blocked = TRUE;")
+        blocked_members = cursor.fetchall()
+        conn.close()
+
+        if not blocked_members:
+            text = "No Blocked Members Found!"
+            if message_id: bot.edit_message_text(text, chat_id, message_id)
+            else: bot.send_message(chat_id, text)
+            return
+
+        state = user_state.get(tg_id, {})
+        selected_unblock = state.get("selected_unblock", set())
+
+        msg_lines = ["Blocked Members List:\n"]
+        markup = InlineKeyboardMarkup(row_width=1)
+
+        for m in blocked_members:
+            m_id = m['telegram_id']
+            name = m['fb_name']
+            is_sel = m_id in selected_unblock
+            btn_txt = f"{name} - Unblock✅" if is_sel else f"{name} ⛔"
+            markup.add(InlineKeyboardButton(btn_txt, callback_data=f"toggle_unblock_{m_id}"))
+
+        markup.add(
+            InlineKeyboardButton("Do It", callback_data="do_unblock_receipt"),
+            InlineKeyboardButton("Cancel", callback_data="ask_cancel")
+        )
+
+        text = "Select member to unblock:"
+        if message_id: bot.edit_message_text(text, chat_id, message_id, reply_markup=markup)
+        else: bot.send_message(chat_id, text, reply_markup=markup)
+    except Exception as e:
+        bot.send_message(chat_id, f"Error fetching blocked list: {e}")
+
 @bot.message_handler(func=lambda msg: msg.text == "🔄 Reset All Data")
 def reset_data_start(message):
     if not is_admin(message.from_user.id): return
@@ -318,35 +451,49 @@ def reset_data_start(message):
     markup.add(
         InlineKeyboardButton("Info Team Data", callback_data="reset_panel_info"),
         InlineKeyboardButton("Meme Team Data", callback_data="reset_panel_meme"),
-        InlineKeyboardButton("Cancel Process", callback_data="cmd_cancel")
+        InlineKeyboardButton("Cancel Process", callback_data="ask_cancel")
     )
     bot.send_message(message.chat.id, "Select Option", reply_markup=markup)
 
-@bot.message_handler(func=lambda msg: msg.text in ["⛔ Block Member", "✅ Unblock"])
-def block_unblock_start(message):
-    if not is_admin(message.from_user.id): return
-    bot.send_message(message.chat.id, "এই অপশনটি প্রসেসিংয়ে রয়েছে।", reply_markup=admin_main_menu())
-
+# 📄 Excel Document Upload Handler
 @bot.message_handler(content_types=['document'])
 def handle_document_upload(message):
     tg_id = message.from_user.id
     state = user_state.get(tg_id, {})
     if state.get("step") == "awaiting_files":
+        doc = message.document
+        fname = doc.file_name or "file.xlsx"
+
+        # Validate File Extension
+        if not (fname.endswith('.xlsx') or fname.endswith('.xls')):
+            bot.send_message(message.chat.id, "**Invalid File**\nPlease provide the correct file.", parse_mode="Markdown")
+            return
+
         files = state.get("uploaded_files", [])
-        file_info = bot.get_file(message.document.file_id)
+        file_info = bot.get_file(doc.file_id)
         downloaded_file = bot.download_file(file_info.file_path)
-        
-        files.append({"name": message.document.file_name, "content": downloaded_file})
+
+        files.append({"name": fname, "content": downloaded_file})
         state["uploaded_files"] = files
         user_state[tg_id] = state
-        
-        if len(files) == 1:
-            bot.send_message(message.chat.id, "100K/800K File Added Successful✅\nInput another file.", reply_markup=get_back_cancel_keyboard("back_to_export_opts"))
-        elif len(files) >= 2:
+
+        cat = state.get("category", "Info Team")
+
+        if cat == "Meme Team":
             state["step"] = "awaiting_batch"
             user_state[tg_id] = state
-            bot.send_message(message.chat.id, "100K/800K File Added Successful✅\n100K/800K File Added Successful✅\n\nNow, provide the Batch Number:", reply_markup=get_back_cancel_keyboard("back_to_export_opts"))
+            bot.send_message(message.chat.id, f"{fname} Added Successfully✅\n\nNow, provide the Batch Number:")
+        else:
+            if len(files) == 1:
+                bot.send_message(message.chat.id, f"{fname} Added Successfully✅\nInput another file.")
+            elif len(files) >= 2:
+                state["step"] = "awaiting_batch"
+                user_state[tg_id] = state
+                f1_name = files[0]['name']
+                f2_name = files[1]['name']
+                bot.send_message(message.chat.id, f"{f1_name} Added Successfully✅\n{f2_name} Added Successfully✅\n\nNow, provide the Batch Number:")
 
+# 💬 Text Inputs Handler (Logic Updates & Batch Number)
 @bot.message_handler(func=lambda msg: True)
 def handle_text_inputs(message):
     tg_id = message.from_user.id
@@ -360,29 +507,33 @@ def handle_text_inputs(message):
         user_state[tg_id] = state
         bot.send_message(message.chat.id, "Select Option", reply_markup=get_logic_panel_keyboard())
 
-    elif step == "awaiting_prompt":
-        cat = state.get("category", "Info Team")
-        new_prompt = message.text.strip()
-        try:
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO system_prompts (category, prompt_text) VALUES (%s, %s)
-                ON CONFLICT (category) DO UPDATE SET prompt_text = EXCLUDED.prompt_text, updated_at = CURRENT_TIMESTAMP;
-            """, (cat, new_prompt))
-            conn.commit()
-            conn.close()
-            bot.send_message(message.chat.id, "Prompt updated successfully.", reply_markup=get_export_options_keyboard())
-        except Exception as e:
-            bot.send_message(message.chat.id, f"Error updating prompt: {e}")
-        state["step"] = None
-        user_state[tg_id] = state
-
     elif step == "awaiting_logic_holidays":
-        bot.send_message(message.chat.id, "Select Option", reply_markup=get_logic_panel_keyboard())
+        text_val = message.text.strip()
+        nums = re.findall(r'\d+', text_val)
+        cat = state.get("category", "Info Team")
+        
+        if nums:
+            new_limit = int(nums[0])
+            try:
+                conn = get_db_connection()
+                cursor = conn.cursor()
+                cursor.execute("""
+                    INSERT INTO dynamic_logic (category, holiday_limit) VALUES (%s, %s)
+                    ON CONFLICT (category) DO UPDATE SET holiday_limit = EXCLUDED.holiday_limit, updated_at = CURRENT_TIMESTAMP;
+                """, (cat, new_limit))
+                conn.commit()
+                conn.close()
+                bot.send_message(message.chat.id, "Your logic has been successfully updated✅")
+            except Exception as e:
+                bot.send_message(message.chat.id, f"Error updating logic: {e}")
+        else:
+            bot.send_message(message.chat.id, "Your logic has been successfully updated✅")
+            
         state["step"] = None
         user_state[tg_id] = state
+        bot.send_message(message.chat.id, "Select Option", reply_markup=get_logic_panel_keyboard())
 
+# 🔘 All Inline Callbacks Handler
 @bot.callback_query_handler(func=lambda call: True)
 def handle_all_callbacks(call):
     tg_id = call.from_user.id
@@ -393,19 +544,30 @@ def handle_all_callbacks(call):
     state = user_state.get(tg_id, {})
     cat = state.get("category", "Info Team")
 
-    if data.startswith("sel_month_"):
+    # Cancel Confirmation Logic
+    if data == "ask_cancel":
+        bot.send_message(call.message.chat.id, "Do you really want to cancel the Process?", reply_markup=get_cancel_confirm_keyboard())
+    elif data == "confirm_cancel_yes":
+        user_state[tg_id] = {}
+        bot.edit_message_text("Process Canceled Successfully✅", call.message.chat.id, call.message.message_id)
+    elif data == "confirm_cancel_no":
+        bot.edit_message_text("Resuming Process...", call.message.chat.id, call.message.message_id)
+
+    # Workflow Month Selection
+    elif data.startswith("sel_month_"):
         month = data.replace("sel_month_", "")
         state["month"] = month
         user_state[tg_id] = state
         bot.edit_message_text("Select Option", call.message.chat.id, call.message.message_id, reply_markup=get_task_options_keyboard())
 
+    # See Details Handler (Default 0/0 Task Display)
     elif data == "task_opt_details":
         month = state.get("month", "January")
         try:
             conn = get_db_connection()
             cursor = conn.cursor(cursor_factory=RealDictCursor)
             cursor.execute("""
-                SELECT m.fb_name, m.team_name, COALESCE(t.task_done, 0) as task_done, COALESCE(t.task_total, 3) as task_total, 
+                SELECT m.fb_name, m.team_name, COALESCE(t.task_done, 0) as task_done, COALESCE(t.task_total, 0) as task_total, 
                        COALESCE(t.holiday_days, 0) as holiday_days, COALESCE(t.article_count, 0) as article_count
                 FROM members m
                 LEFT JOIN task_records t ON m.telegram_id = t.telegram_id AND t.month = %s
@@ -415,7 +577,7 @@ def handle_all_callbacks(call):
             conn.close()
 
             if not records:
-                bot.edit_message_text("No Data Found!", call.message.chat.id, call.message.message_id, reply_markup=get_back_cancel_keyboard("back_to_task_opts"))
+                bot.edit_message_text("No Data Found!", call.message.chat.id, call.message.message_id, reply_markup=get_task_options_keyboard())
                 return
 
             teams_grouped = {}
@@ -425,38 +587,48 @@ def handle_all_callbacks(call):
 
             msg_lines = []
             for t_name, m_list in teams_grouped.items():
-                msg_lines.append(f"{t_name}\n")
+                msg_lines.append(f"**{t_name}**\n")
                 for r in m_list:
                     msg_lines.append(f"{r['fb_name']} - {r['task_done']}/{r['task_total']} - {r['holiday_days']}Days - {r['article_count']}\n")
                 msg_lines.append("\n")
 
-            bot.edit_message_text("".join(msg_lines).strip(), call.message.chat.id, call.message.message_id, reply_markup=get_back_cancel_keyboard("back_to_task_opts"))
+            bot.edit_message_text("".join(msg_lines).strip(), call.message.chat.id, call.message.message_id, parse_mode="Markdown", reply_markup=get_task_options_keyboard())
         except Exception:
-            bot.edit_message_text("No Data Found!", call.message.chat.id, call.message.message_id, reply_markup=get_back_cancel_keyboard("back_to_task_opts"))
+            bot.edit_message_text("No Data Found!", call.message.chat.id, call.message.message_id, reply_markup=get_task_options_keyboard())
 
     elif data == "task_opt_export":
         bot.edit_message_text("Select Option", call.message.chat.id, call.message.message_id, reply_markup=get_export_options_keyboard())
 
-    elif data == "exp_sub_prompt":
-        state["step"] = "awaiting_prompt"
-        user_state[tg_id] = state
-        msg_text = f"For your {cat.lower()}, change the previously provided PDF generator logic prompt and enter the new one directly here."
-        bot.edit_message_text(msg_text, call.message.chat.id, call.message.message_id, reply_markup=get_back_cancel_keyboard("back_to_export_opts"))
+    elif data == "exp_sub_logic":
+        bot.edit_message_text("Select Option", call.message.chat.id, call.message.message_id, reply_markup=get_logic_panel_keyboard())
 
     elif data == "exp_sub_process":
         state["step"] = "awaiting_files"
         state["uploaded_files"] = []
         user_state[tg_id] = state
-        bot.edit_message_text("Please upload the 800K and 100K Excel files.", call.message.chat.id, call.message.message_id, reply_markup=get_back_cancel_keyboard("back_to_export_opts"))
+        
+        req_msg = "Please upload Excel File" if cat == "Meme Team" else "Please upload the 800K and 100K Excel files."
+        bot.edit_message_text(req_msg, call.message.chat.id, call.message.message_id)
 
+    # Dynamic Logic Reviews
     elif data.startswith("logic_opt_"):
         opt = data.replace("logic_opt_", "")
+        current_limit = get_holiday_limit(cat)
+        
         if opt == "holidays":
-            msg = "Approved Holidays Safety net: এখানে বলা হয়েছে যে, কোনো সদস্য যদি ১ মাসে ২০ দিনের বেশি ছুটি নেন তবে তাকে Good Performance জোনের শেষে রাখা হবে।\n\nWould you like to change anything in this regard?"
-            bot.edit_message_text(msg, call.message.chat.id, call.message.message_id, reply_markup=get_yes_no_keyboard("change_logic_holidays", "keep_logic_holidays", "back_to_export_opts"))
+            msg = f"Approved Holidays Safety net: এখানে বলা হয়েছে যে, কোনো সদস্য যদি ১ মাসে {current_limit} দিনের বেশি ছুটি নেন তবে তাকে Good Performance জোনের শেষে রাখা হবে।\n\nWould you like to change anything in this regard?"
+            markup = InlineKeyboardMarkup(row_width=3)
+            markup.add(
+                InlineKeyboardButton("Yes✅", callback_data="change_logic_holidays"),
+                InlineKeyboardButton("Cancel", callback_data="ask_cancel"),
+                InlineKeyboardButton("No❌", callback_data="back_to_logic_panel")
+            )
+            bot.edit_message_text(msg, call.message.chat.id, call.message.message_id, reply_markup=markup)
         elif opt == "excellent":
-            msg = "Excellent Position: পোস্ট অ্যাপ্রুভ এবং স্পেশাল টাস্ক পূর্ণ করার মানদণ্ড।\n\nWould you like to change anything in this regard?"
-            bot.edit_message_text(msg, call.message.chat.id, call.message.message_id, reply_markup=get_yes_no_keyboard("change_logic_exc", "keep_logic_exc", "back_to_export_opts"))
+            msg = "Excellent Position: পোস্ট অ্যাপ্রুভ এবং স্পেশাল টাস্ক পূর্ণ করার মানদণ্ড।"
+            markup = InlineKeyboardMarkup(row_width=1)
+            markup.add(InlineKeyboardButton("Back", callback_data="back_to_logic_panel"))
+            bot.edit_message_text(msg, call.message.chat.id, call.message.message_id, reply_markup=markup)
         elif opt in ["good", "bad"]:
             bot.edit_message_text("Select Option", call.message.chat.id, call.message.message_id, reply_markup=get_logic_panel_keyboard())
 
@@ -464,28 +636,170 @@ def handle_all_callbacks(call):
         state["step"] = "awaiting_logic_holidays"
         user_state[tg_id] = state
         markup = InlineKeyboardMarkup()
-        markup.add(InlineKeyboardButton("Cancel Process ❌", callback_data="back_to_logic_panel"))
+        markup.add(InlineKeyboardButton("Cancel Process ❌", callback_data="ask_cancel"))
         bot.edit_message_text("তুমি Approved Holidays Safety net এ কি কি পরিবর্তন করতে চাও আমাকে সংক্ষেপে ব্যাখ্যা করে বলো।", call.message.chat.id, call.message.message_id, reply_markup=markup)
 
     elif data == "logic_do_export":
-        bot.edit_message_text("Do you want to export the PDF report now?", call.message.chat.id, call.message.message_id, reply_markup=get_yes_no_keyboard("final_export_yes", "back_to_logic_panel", "back_to_export_opts"))
+        markup = InlineKeyboardMarkup(row_width=2)
+        markup.add(
+            InlineKeyboardButton("Yes✅", callback_data="final_export_yes"),
+            InlineKeyboardButton("No❌", callback_data="back_to_logic_panel")
+        )
+        markup.add(InlineKeyboardButton("Cancel", callback_data="ask_cancel"))
+        bot.edit_message_text("Do you want to export the PDF report now?", call.message.chat.id, call.message.message_id, reply_markup=markup)
 
     elif data == "final_export_yes":
         month = state.get("month", "August")
         q_date = get_qualified_date(month)
         batch = state.get("batch_number", "01")
+        h_limit = get_holiday_limit(cat)
         
         bot.send_message(call.message.chat.id, "Generating PDF Report...")
         try:
             files = state.get("uploaded_files", [])
-            f1_bytes = files[0]['content'] if len(files) > 0 else None
-            f2_bytes = files[1]['content'] if len(files) > 1 else None
             
-            pdf_path = generate_info_team_pdf(f1_bytes, f2_bytes, batch, q_date, output_pdf_path="Info_Team_Report.pdf")
+            if cat == "Meme Team":
+                f_bytes = files[0]['content'] if len(files) > 0 else None
+                pdf_path = generate_meme_team_pdf(f_bytes, batch, q_date, holiday_limit=h_limit, output_pdf_path="Meme_Team_Report.pdf")
+            else:
+                f1_bytes = files[0]['content'] if len(files) > 0 else None
+                f2_bytes = files[1]['content'] if len(files) > 1 else None
+                pdf_path = generate_info_team_pdf(f1_bytes, f2_bytes, batch, q_date, holiday_limit=h_limit, output_pdf_path="Info_Team_Report.pdf")
+                
             with open(pdf_path, 'rb') as f:
                 bot.send_document(call.message.chat.id, f)
         except Exception as e:
             bot.send_message(call.message.chat.id, f"Error generating PDF: {e}")
+
+    # Block Toggle Callbacks
+    elif data.startswith("block_select_"):
+        target_cat = "Info Team" if "info" in data else "Meme Team"
+        state["manage_cat"] = target_cat
+        state["block_actions"] = {}
+        user_state[tg_id] = state
+        render_block_members_list(call.message.chat.id, tg_id, call.message.message_id)
+
+    elif data.startswith("act_block_"):
+        m_id = int(data.replace("act_block_", ""))
+        actions = state.get("block_actions", {})
+        actions[m_id] = "BLOCK" if actions.get(m_id) != "BLOCK" else None
+        state["block_actions"] = actions
+        user_state[tg_id] = state
+        render_block_members_list(call.message.chat.id, tg_id, call.message.message_id)
+
+    elif data.startswith("act_remove_"):
+        m_id = int(data.replace("act_remove_", ""))
+        actions = state.get("block_actions", {})
+        actions[m_id] = "REMOVE" if actions.get(m_id) != "REMOVE" else None
+        state["block_actions"] = actions
+        user_state[tg_id] = state
+        render_block_members_list(call.message.chat.id, tg_id, call.message.message_id)
+
+    elif data == "do_block_receipt":
+        actions = state.get("block_actions", {})
+        active_actions = {k: v for k, v in actions.items() if v is not None}
+        if not active_actions:
+            bot.answer_callback_query(call.id, "No member selected!")
+            return
+
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        cursor.execute("SELECT telegram_id, fb_name, team_name FROM members WHERE telegram_id = ANY(%s);", (list(active_actions.keys()),))
+        m_details = cursor.fetchall()
+        conn.close()
+
+        msg_lines = ["Member Action Receipt:\n"]
+        for m in m_details:
+            act = active_actions[m['telegram_id']]
+            act_label = "Blocked⛔" if act == "BLOCK" else "Remove ❌"
+            msg_lines.append(f"{m['team_name']}\n{m['fb_name']} - {act_label}\n")
+
+        msg_lines.append("\nAre you sure you want to do it?")
+        markup = InlineKeyboardMarkup(row_width=2)
+        markup.add(
+            InlineKeyboardButton("Yes✅", callback_data="confirm_block_exec"),
+            InlineKeyboardButton("No❌", callback_data="back_to_block_list")
+        )
+        markup.add(InlineKeyboardButton("Cancel", callback_data="ask_cancel"))
+        bot.edit_message_text("\n".join(msg_lines), call.message.chat.id, call.message.message_id, reply_markup=markup)
+
+    elif data == "confirm_block_exec":
+        actions = state.get("block_actions", {})
+        try:
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            for m_id, act in actions.items():
+                if act == "BLOCK":
+                    cursor.execute("UPDATE members SET is_blocked = TRUE WHERE telegram_id = %s;", (m_id,))
+                elif act == "REMOVE":
+                    cursor.execute("DELETE FROM task_records WHERE telegram_id = %s;", (m_id,))
+                    cursor.execute("DELETE FROM members WHERE telegram_id = %s;", (m_id,))
+            conn.commit()
+            conn.close()
+            bot.edit_message_text("Process Successful✅", call.message.chat.id, call.message.message_id)
+        except Exception as e:
+            bot.edit_message_text(f"Error executing action: {e}", call.message.chat.id, call.message.message_id)
+
+    # Unblock Toggle Callbacks
+    elif data.startswith("toggle_unblock_"):
+        m_id = int(data.replace("toggle_unblock_", ""))
+        sel = state.get("selected_unblock", set())
+        if m_id in sel: sel.remove(m_id)
+        else: sel.add(m_id)
+        state["selected_unblock"] = sel
+        user_state[tg_id] = state
+        render_unblock_list(call.message.chat.id, tg_id, call.message.message_id)
+
+    elif data == "do_unblock_receipt":
+        sel = state.get("selected_unblock", set())
+        if not sel:
+            bot.answer_callback_query(call.id, "No member selected!")
+            return
+
+        conn = get_db_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        cursor.execute("SELECT telegram_id, fb_name, team_name FROM members WHERE telegram_id = ANY(%s);", (list(sel),))
+        m_details = cursor.fetchall()
+        conn.close()
+
+        msg_lines = ["Unblock Receipt:\n"]
+        for m in m_details:
+            msg_lines.append(f"{m['team_name']}\n{m['fb_name']} - Unblock✅\n")
+
+        msg_lines.append("\nAre you sure you want to do it?")
+        markup = InlineKeyboardMarkup(row_width=2)
+        markup.add(
+            InlineKeyboardButton("Yes✅", callback_data="confirm_unblock_exec"),
+            InlineKeyboardButton("No❌", callback_data="back_to_unblock_list")
+        )
+        markup.add(InlineKeyboardButton("Cancel", callback_data="ask_cancel"))
+        bot.edit_message_text("\n".join(msg_lines), call.message.chat.id, call.message.message_id, reply_markup=markup)
+
+    elif data == "confirm_unblock_exec":
+        sel = state.get("selected_unblock", set())
+        try:
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute("UPDATE members SET is_blocked = FALSE WHERE telegram_id = ANY(%s);", (list(sel),))
+            conn.commit()
+            conn.close()
+            bot.edit_message_text("Process Successful✅", call.message.chat.id, call.message.message_id)
+        except Exception as e:
+            bot.edit_message_text(f"Error unblocking members: {e}", call.message.chat.id, call.message.message_id)
+
+    # Navigation Callback Fixes
+    elif data == "back_to_block_list":
+        render_block_members_list(call.message.chat.id, tg_id, call.message.message_id)
+    elif data == "back_to_unblock_list":
+        render_unblock_list(call.message.chat.id, tg_id, call.message.message_id)
+    elif data == "back_to_month":
+        bot.edit_message_text("Select Month", call.message.chat.id, call.message.message_id, reply_markup=get_month_keyboard())
+    elif data == "back_to_task_opts":
+        bot.edit_message_text("Select Option", call.message.chat.id, call.message.message_id, reply_markup=get_task_options_keyboard())
+    elif data == "back_to_export_opts":
+        bot.edit_message_text("Select Option", call.message.chat.id, call.message.message_id, reply_markup=get_export_options_keyboard())
+    elif data == "back_to_logic_panel":
+        bot.edit_message_text("Select Option", call.message.chat.id, call.message.message_id, reply_markup=get_logic_panel_keyboard())
 
     elif data.startswith("reset_panel_"):
         target_team = "Info Team" if "info" in data else "Meme Team"
@@ -494,13 +808,28 @@ def handle_all_callbacks(call):
         
         markup = InlineKeyboardMarkup(row_width=1)
         markup.add(InlineKeyboardButton("Reset All Data", callback_data=f"confirm_reset_{target_team}"))
-        markup.add(InlineKeyboardButton("Back", callback_data="cmd_reset_data"), InlineKeyboardButton("Cancel", callback_data="cmd_cancel"))
+        markup.add(InlineKeyboardButton("Back", callback_data="cmd_reset_data"), InlineKeyboardButton("Cancel", callback_data="ask_cancel"))
         bot.edit_message_text(f"{target_team} Reset Panel", call.message.chat.id, call.message.message_id, reply_markup=markup)
+
+    elif data == "cmd_reset_data":
+        markup = InlineKeyboardMarkup(row_width=1)
+        markup.add(
+            InlineKeyboardButton("Info Team Data", callback_data="reset_panel_info"),
+            InlineKeyboardButton("Meme Team Data", callback_data="reset_panel_meme"),
+            InlineKeyboardButton("Cancel Process", callback_data="ask_cancel")
+        )
+        bot.edit_message_text("Select Option", call.message.chat.id, call.message.message_id, reply_markup=markup)
 
     elif data.startswith("confirm_reset_"):
         target_team = state.get("reset_target", "Info Team")
         msg = f"Are you sure you want to reset all data for {target_team}?"
-        bot.edit_message_text(msg, call.message.chat.id, call.message.message_id, reply_markup=get_yes_no_keyboard(f"do_reset_{target_team}", "cmd_reset_data", "cmd_reset_data"))
+        markup = InlineKeyboardMarkup(row_width=2)
+        markup.add(
+            InlineKeyboardButton("Yes✅", callback_data=f"do_reset_{target_team}"),
+            InlineKeyboardButton("No❌", callback_data="cmd_reset_data")
+        )
+        markup.add(InlineKeyboardButton("Cancel", callback_data="ask_cancel"))
+        bot.edit_message_text(msg, call.message.chat.id, call.message.message_id, reply_markup=markup)
 
     elif data.startswith("do_reset_"):
         target_team = state.get("reset_target", "Info Team")
@@ -515,16 +844,51 @@ def handle_all_callbacks(call):
         except Exception as e:
             bot.edit_message_text(f"Error resetting data: {e}", call.message.chat.id, call.message.message_id)
 
-    elif data == "back_to_month":
-        bot.edit_message_text("Select Month", call.message.chat.id, call.message.message_id, reply_markup=get_month_keyboard())
-    elif data == "back_to_task_opts":
-        bot.edit_message_text("Select Option", call.message.chat.id, call.message.message_id, reply_markup=get_task_options_keyboard())
-    elif data == "back_to_export_opts":
-        bot.edit_message_text("Select Option", call.message.chat.id, call.message.message_id, reply_markup=get_export_options_keyboard())
-    elif data == "back_to_logic_panel" or data.startswith("keep_logic_"):
-        bot.edit_message_text("Select Option", call.message.chat.id, call.message.message_id, reply_markup=get_logic_panel_keyboard())
-    elif data == "cmd_cancel":
-        bot.edit_message_text("Action canceled.", call.message.chat.id, call.message.message_id)
+def render_block_members_list(chat_id, tg_id, message_id=None):
+    state = user_state.get(tg_id, {})
+    manage_cat = state.get("manage_cat", "Info Team")
+    actions = state.get("block_actions", {})
+
+    conn = get_db_connection()
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
+    cursor.execute("SELECT telegram_id, fb_name, team_name FROM members WHERE team_name = ANY(%s) AND is_blocked = FALSE AND is_removed = FALSE;", (TEAMS_MAP.get(manage_cat, []),))
+    members = cursor.fetchall()
+    conn.close()
+
+    if not members:
+        text = "No Members Found!"
+        if message_id: bot.edit_message_text(text, chat_id, message_id)
+        else: bot.send_message(chat_id, text)
+        return
+
+    teams_grouped = {}
+    for m in members:
+        teams_grouped.setdefault(m['team_name'], []).append(m)
+
+    markup = InlineKeyboardMarkup()
+    for t_name, m_list in teams_grouped.items():
+        markup.add(InlineKeyboardButton(f"--- {t_name} Members ---", callback_data="ignore"))
+        for m in m_list:
+            m_id = m['telegram_id']
+            act = actions.get(m_id)
+            b_icon = "⛔ (Selected)" if act == "BLOCK" else "⛔"
+            r_icon = "❌ (Selected)" if act == "REMOVE" else "❌"
+            
+            row = [
+                InlineKeyboardButton(m['fb_name'], callback_data="ignore"),
+                InlineKeyboardButton(b_icon, callback_data=f"act_block_{m_id}"),
+                InlineKeyboardButton(r_icon, callback_data=f"act_remove_{m_id}")
+            ]
+            markup.row(*row)
+
+    markup.add(
+        InlineKeyboardButton("Do It", callback_data="do_block_receipt"),
+        InlineKeyboardButton("Cancel", callback_data="ask_cancel")
+    )
+
+    text = f"Manage {manage_cat} Members:"
+    if message_id: bot.edit_message_text(text, chat_id, message_id, reply_markup=markup)
+    else: bot.send_message(chat_id, text, reply_markup=markup)
 
 # 🚀 Launch Server & Bot Polling
 if __name__ == "__main__":
