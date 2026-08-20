@@ -1,4 +1,6 @@
-python-telegram-bot>=20.0
+pyTelegramBotAPI
+psycopg2-binary
+Flask
 pandas
 openpyxl
 reportlab
