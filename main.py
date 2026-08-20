@@ -1,6 +1,7 @@
 import os
 import io
 import re
+import time
 import calendar
 import threading
 import pandas as pd
@@ -88,7 +89,6 @@ def init_db():
             );
         """)
 
-        # Default logic settings
         cursor.execute("""
             INSERT INTO dynamic_logic (category, holiday_limit) 
             VALUES ('Info Team', 20), ('Meme Team', 20)
@@ -129,7 +129,6 @@ DEFAULT_BLOCKLIST = [
 
 user_state = {}
 
-# 📊 Get Dynamic Holiday Limit
 def get_holiday_limit(category):
     try:
         conn = get_db_connection()
@@ -192,7 +191,6 @@ def get_logic_panel_keyboard():
         InlineKeyboardButton("Good Position", callback_data="logic_opt_good"),
         InlineKeyboardButton("Bad Position", callback_data="logic_opt_bad")
     )
-    # Export PDF and Cancel on same row
     row = [
         InlineKeyboardButton("Export PDF 📄", callback_data="logic_do_export"),
         InlineKeyboardButton("Cancel ❌", callback_data="ask_cancel")
@@ -297,7 +295,7 @@ def generate_info_team_pdf(excel_800k_bytes, excel_100k_bytes, batch_number, qua
     doc.build(story)
     return output_pdf_path
 
-# 🎭 Meme Team PDF Generator Logic (Single File Input)
+# 🎭 Meme Team PDF Generator Logic
 def generate_meme_team_pdf(excel_bytes, batch_number, qualified_date, holiday_limit=20, output_pdf_path="Meme_Team_Report.pdf"):
     df = pd.read_excel(io.BytesIO(excel_bytes)) if excel_bytes else pd.DataFrame()
     
@@ -391,7 +389,6 @@ def task_workflow_start(message):
 @bot.message_handler(func=lambda msg: msg.text == "⛔ Block Member")
 def block_member_start(message):
     if not is_admin(message.from_user.id): return
-    
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
         InlineKeyboardButton("Info Team", callback_data="block_select_info"),
@@ -423,9 +420,7 @@ def render_unblock_list(chat_id, tg_id, message_id=None):
         state = user_state.get(tg_id, {})
         selected_unblock = state.get("selected_unblock", set())
 
-        msg_lines = ["Blocked Members List:\n"]
         markup = InlineKeyboardMarkup(row_width=1)
-
         for m in blocked_members:
             m_id = m['telegram_id']
             name = m['fb_name']
@@ -464,7 +459,6 @@ def handle_document_upload(message):
         doc = message.document
         fname = doc.file_name or "file.xlsx"
 
-        # Validate File Extension
         if not (fname.endswith('.xlsx') or fname.endswith('.xls')):
             bot.send_message(message.chat.id, "**Invalid File**\nPlease provide the correct file.", parse_mode="Markdown")
             return
@@ -493,7 +487,7 @@ def handle_document_upload(message):
                 f2_name = files[1]['name']
                 bot.send_message(message.chat.id, f"{f1_name} Added Successfully✅\n{f2_name} Added Successfully✅\n\nNow, provide the Batch Number:")
 
-# 💬 Text Inputs Handler (Logic Updates & Batch Number)
+# 💬 Text Inputs Handler
 @bot.message_handler(func=lambda msg: True)
 def handle_text_inputs(message):
     tg_id = message.from_user.id
@@ -533,7 +527,7 @@ def handle_text_inputs(message):
         user_state[tg_id] = state
         bot.send_message(message.chat.id, "Select Option", reply_markup=get_logic_panel_keyboard())
 
-# 🔘 All Inline Callbacks Handler
+# 🔘 Inline Callbacks Handler
 @bot.callback_query_handler(func=lambda call: True)
 def handle_all_callbacks(call):
     tg_id = call.from_user.id
@@ -544,7 +538,6 @@ def handle_all_callbacks(call):
     state = user_state.get(tg_id, {})
     cat = state.get("category", "Info Team")
 
-    # Cancel Confirmation Logic
     if data == "ask_cancel":
         bot.send_message(call.message.chat.id, "Do you really want to cancel the Process?", reply_markup=get_cancel_confirm_keyboard())
     elif data == "confirm_cancel_yes":
@@ -553,14 +546,12 @@ def handle_all_callbacks(call):
     elif data == "confirm_cancel_no":
         bot.edit_message_text("Resuming Process...", call.message.chat.id, call.message.message_id)
 
-    # Workflow Month Selection
     elif data.startswith("sel_month_"):
         month = data.replace("sel_month_", "")
         state["month"] = month
         user_state[tg_id] = state
         bot.edit_message_text("Select Option", call.message.chat.id, call.message.message_id, reply_markup=get_task_options_keyboard())
 
-    # See Details Handler (Default 0/0 Task Display)
     elif data == "task_opt_details":
         month = state.get("month", "January")
         try:
@@ -610,7 +601,6 @@ def handle_all_callbacks(call):
         req_msg = "Please upload Excel File" if cat == "Meme Team" else "Please upload the 800K and 100K Excel files."
         bot.edit_message_text(req_msg, call.message.chat.id, call.message.message_id)
 
-    # Dynamic Logic Reviews
     elif data.startswith("logic_opt_"):
         opt = data.replace("logic_opt_", "")
         current_limit = get_holiday_limit(cat)
@@ -671,7 +661,6 @@ def handle_all_callbacks(call):
         except Exception as e:
             bot.send_message(call.message.chat.id, f"Error generating PDF: {e}")
 
-    # Block Toggle Callbacks
     elif data.startswith("block_select_"):
         target_cat = "Info Team" if "info" in data else "Meme Team"
         state["manage_cat"] = target_cat
@@ -740,7 +729,6 @@ def handle_all_callbacks(call):
         except Exception as e:
             bot.edit_message_text(f"Error executing action: {e}", call.message.chat.id, call.message.message_id)
 
-    # Unblock Toggle Callbacks
     elif data.startswith("toggle_unblock_"):
         m_id = int(data.replace("toggle_unblock_", ""))
         sel = state.get("selected_unblock", set())
@@ -787,7 +775,6 @@ def handle_all_callbacks(call):
         except Exception as e:
             bot.edit_message_text(f"Error unblocking members: {e}", call.message.chat.id, call.message.message_id)
 
-    # Navigation Callback Fixes
     elif data == "back_to_block_list":
         render_block_members_list(call.message.chat.id, tg_id, call.message.message_id)
     elif data == "back_to_unblock_list":
@@ -890,14 +877,22 @@ def render_block_members_list(chat_id, tg_id, message_id=None):
     if message_id: bot.edit_message_text(text, chat_id, message_id, reply_markup=markup)
     else: bot.send_message(chat_id, text, reply_markup=markup)
 
-# 🚀 Launch Server & Bot Polling
+# 🚀 Launch Server & Bot Polling with Auto-Retry Logic
 if __name__ == "__main__":
     t = threading.Thread(target=run_flask)
     t.daemon = True
     t.start()
     print("🤖 KBKh Central Control Room Bot is Active & Running...")
+    
     try:
         bot.remove_webhook()
     except Exception as e:
         print(f"Webhook notice: {e}")
-    bot.infinity_polling(skip_pending=True)
+        
+    # Safe Loop to handle temporary 409 Conflicts during Render restarts
+    while True:
+        try:
+            bot.infinity_polling(skip_pending=True, timeout=30, long_polling_timeout=30)
+        except Exception as e:
+            print(f"Polling conflict/error encountered: {e}. Retrying in 5 seconds...")
+            time.sleep(5)
