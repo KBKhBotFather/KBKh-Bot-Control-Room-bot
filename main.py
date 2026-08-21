@@ -258,7 +258,12 @@ def handle_all_callbacks(call):
                 t_name = r.get('team_name', 'Team')
                 teams_grouped.setdefault(t_name, []).append(r)
 
-            msg_lines = []
+            msg_lines = [
+                "Batch Number: ",
+                "Qualified Date: ",
+                ""
+            ]
+
             for t_name, m_list in teams_grouped.items():
                 msg_lines.append(f"{t_name}")
                 for r in m_list:
