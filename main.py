@@ -73,7 +73,6 @@ def init_db():
             );
         """)
 
-        # Safe schema update for existing tables
         cursor.execute("ALTER TABLE task_records ADD COLUMN IF NOT EXISTS general_posts INT DEFAULT 0;")
         cursor.execute("ALTER TABLE task_records ADD COLUMN IF NOT EXISTS special_posts INT DEFAULT 0;")
 
@@ -100,7 +99,7 @@ MONTHS = ["January", "February", "March", "April", "May", "June", "July", "Augus
 
 user_state = {}
 
-# 🎹 Keyboard Generators
+# 🎹 Keyboards
 def admin_main_menu():
     markup = ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
     markup.add(
@@ -112,19 +111,20 @@ def admin_main_menu():
     )
     return markup
 
+# শুধুমাত্র মাস দেখার জায়গাতেই Close বাটন
 def get_month_keyboard():
     markup = InlineKeyboardMarkup(row_width=3)
     buttons = [InlineKeyboardButton(m, callback_data=f"sel_month_{m}") for m in MONTHS]
     markup.add(*buttons)
-    markup.add(InlineKeyboardButton("Close ❌", callback_data="close_msg"))
+    markup.add(InlineKeyboardButton("Close", callback_data="close_msg"))
     return markup
 
 def get_close_keyboard():
     markup = InlineKeyboardMarkup()
-    markup.add(InlineKeyboardButton("Close ❌", callback_data="close_msg"))
+    markup.add(InlineKeyboardButton("Close", callback_data="close_msg"))
     return markup
 
-# 📌 Telegram Bot Handlers
+# 📌 Handlers
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     tg_id = message.from_user.id
@@ -146,7 +146,7 @@ def task_workflow_start(message):
     user_state[message.from_user.id] = {"category": category}
     bot.send_message(message.chat.id, "Select Month", reply_markup=get_month_keyboard())
 
-# ⛔ Block Member Flow
+# ⛔ Block Member Flow (আগের অরিজিনাল প্যানেল)
 @bot.message_handler(func=lambda msg: msg.text == "⛔ Block Member")
 def block_member_start(message):
     if not is_admin(message.from_user.id): return
@@ -155,10 +155,9 @@ def block_member_start(message):
         InlineKeyboardButton("Info Team", callback_data="block_select_info"),
         InlineKeyboardButton("Meme Team", callback_data="block_select_meme")
     )
-    markup.add(InlineKeyboardButton("Close ❌", callback_data="close_msg"))
     bot.send_message(message.chat.id, "Select Team to Manage Members:", reply_markup=markup)
 
-# ✅ Unblock Flow
+# ✅ Unblock Flow (আগের অরিজিনাল প্যানেল)
 @bot.message_handler(func=lambda msg: msg.text == "✅ Unblock")
 def unblock_member_start(message):
     if not is_admin(message.from_user.id): return
@@ -174,8 +173,8 @@ def render_unblock_list(chat_id, tg_id, message_id=None):
 
         if not blocked_members:
             text = "No Blocked Members Found!"
-            if message_id: bot.edit_message_text(text, chat_id, message_id, reply_markup=get_close_keyboard())
-            else: bot.send_message(chat_id, text, reply_markup=get_close_keyboard())
+            if message_id: bot.edit_message_text(text, chat_id, message_id)
+            else: bot.send_message(chat_id, text)
             return
 
         state = user_state.get(tg_id, {})
@@ -189,16 +188,13 @@ def render_unblock_list(chat_id, tg_id, message_id=None):
             btn_txt = f"{name} - Unblock✅" if is_sel else f"{name} ⛔"
             markup.add(InlineKeyboardButton(btn_txt, callback_data=f"toggle_unblock_{m_id}"))
 
-        markup.add(
-            InlineKeyboardButton("Do It", callback_data="do_unblock_receipt"),
-            InlineKeyboardButton("Close ❌", callback_data="close_msg")
-        )
+        markup.add(InlineKeyboardButton("Do It", callback_data="do_unblock_receipt"))
 
         text = "Select member to unblock:"
         if message_id: bot.edit_message_text(text, chat_id, message_id, reply_markup=markup)
         else: bot.send_message(chat_id, text, reply_markup=markup)
     except Exception as e:
-        bot.send_message(chat_id, f"Error fetching blocked list: {e}", reply_markup=get_close_keyboard())
+        bot.send_message(chat_id, f"Error fetching blocked list: {e}")
 
 @bot.message_handler(func=lambda msg: msg.text == "🔄 Reset All Data")
 def reset_data_start(message):
@@ -206,8 +202,7 @@ def reset_data_start(message):
     markup = InlineKeyboardMarkup(row_width=1)
     markup.add(
         InlineKeyboardButton("Info Team Data", callback_data="reset_panel_info"),
-        InlineKeyboardButton("Meme Team Data", callback_data="reset_panel_meme"),
-        InlineKeyboardButton("Close ❌", callback_data="close_msg")
+        InlineKeyboardButton("Meme Team Data", callback_data="reset_panel_meme")
     )
     bot.send_message(message.chat.id, "Select Option", reply_markup=markup)
 
@@ -222,8 +217,9 @@ def handle_all_callbacks(call):
     state = user_state.get(tg_id, {})
     cat = state.get("category", "Info Team")
 
+    # ক্লোজ বাটনে ইমোজি ছাড়া Closed লেখা
     if data == "close_msg":
-        bot.edit_message_text("Closed✅", call.message.chat.id, call.message.message_id)
+        bot.edit_message_text("Closed", call.message.chat.id, call.message.message_id)
 
     elif data.startswith("sel_month_"):
         month = data.replace("sel_month_", "")
@@ -268,10 +264,8 @@ def handle_all_callbacks(call):
                 msg_lines.append(f"{t_name}")
                 for r in m_list:
                     if cat == "Meme Team":
-                        # Meme Team Format: Name - General Post - Special Post - Task Ratio - Holiday
                         msg_lines.append(f"{r['fb_name']} - {r['general_posts']} - {r['special_posts']} - {r['task_done']}/{r['task_total']} - {r['holiday_days']}Days")
                     else:
-                        # Info Team Format: Name - Task Ratio - Holiday - Article Count
                         msg_lines.append(f"{r['fb_name']} - {r['task_done']}/{r['task_total']} - {r['holiday_days']}Days - {r['article_count']}")
                 msg_lines.append("")
 
@@ -324,8 +318,7 @@ def handle_all_callbacks(call):
         msg_lines.append("\nAre you sure you want to do it?")
         markup = InlineKeyboardMarkup(row_width=2)
         markup.add(
-            InlineKeyboardButton("Yes✅", callback_data="confirm_block_exec"),
-            InlineKeyboardButton("Close ❌", callback_data="close_msg")
+            InlineKeyboardButton("Yes✅", callback_data="confirm_block_exec")
         )
         bot.edit_message_text("\n".join(msg_lines), call.message.chat.id, call.message.message_id, reply_markup=markup)
 
@@ -374,8 +367,7 @@ def handle_all_callbacks(call):
         msg_lines.append("\nAre you sure you want to do it?")
         markup = InlineKeyboardMarkup(row_width=2)
         markup.add(
-            InlineKeyboardButton("Yes✅", callback_data="confirm_unblock_exec"),
-            InlineKeyboardButton("Close ❌", callback_data="close_msg")
+            InlineKeyboardButton("Yes✅", callback_data="confirm_unblock_exec")
         )
         bot.edit_message_text("\n".join(msg_lines), call.message.chat.id, call.message.message_id, reply_markup=markup)
 
@@ -398,7 +390,6 @@ def handle_all_callbacks(call):
         
         markup = InlineKeyboardMarkup(row_width=1)
         markup.add(InlineKeyboardButton("Reset All Data", callback_data=f"confirm_reset_{target_team}"))
-        markup.add(InlineKeyboardButton("Close ❌", callback_data="close_msg"))
         bot.edit_message_text(f"{target_team} Reset Panel", call.message.chat.id, call.message.message_id, reply_markup=markup)
 
     elif data.startswith("confirm_reset_"):
@@ -406,8 +397,7 @@ def handle_all_callbacks(call):
         msg = f"Are you sure you want to reset all data for {target_team}?"
         markup = InlineKeyboardMarkup(row_width=2)
         markup.add(
-            InlineKeyboardButton("Yes✅", callback_data=f"do_reset_{target_team}"),
-            InlineKeyboardButton("Close ❌", callback_data="close_msg")
+            InlineKeyboardButton("Yes✅", callback_data=f"do_reset_{target_team}")
         )
         bot.edit_message_text(msg, call.message.chat.id, call.message.message_id, reply_markup=markup)
 
@@ -437,8 +427,8 @@ def render_block_members_list(chat_id, tg_id, message_id=None):
 
     if not members:
         text = "No Members Found!"
-        if message_id: bot.edit_message_text(text, chat_id, message_id, reply_markup=get_close_keyboard())
-        else: bot.send_message(chat_id, text, reply_markup=get_close_keyboard())
+        if message_id: bot.edit_message_text(text, chat_id, message_id)
+        else: bot.send_message(chat_id, text)
         return
 
     teams_grouped = {}
@@ -461,16 +451,13 @@ def render_block_members_list(chat_id, tg_id, message_id=None):
             ]
             markup.row(*row)
 
-    markup.add(
-        InlineKeyboardButton("Do It", callback_data="do_block_receipt"),
-        InlineKeyboardButton("Close ❌", callback_data="close_msg")
-    )
+    markup.add(InlineKeyboardButton("Do It", callback_data="do_block_receipt"))
 
     text = f"Manage {manage_cat} Members:"
     if message_id: bot.edit_message_text(text, chat_id, message_id, reply_markup=markup)
     else: bot.send_message(chat_id, text, reply_markup=markup)
 
-# 🚀 Launch Server & Bot Polling with Auto-Retry Logic
+# 🚀 Launch Server & Bot Polling
 if __name__ == "__main__":
     t = threading.Thread(target=run_flask)
     t.daemon = True
