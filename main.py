@@ -1,6 +1,7 @@
 import os
-import time
+import calendar
 import threading
+import time
 from flask import Flask
 import psycopg2
 from psycopg2.extras import RealDictCursor
@@ -59,22 +60,36 @@ def init_db():
         """)
 
         cursor.execute("""
+            CREATE TABLE IF NOT EXISTS dynamic_logic (
+                category TEXT PRIMARY KEY,
+                holiday_limit INT DEFAULT 20,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+
+        cursor.execute("""
             CREATE TABLE IF NOT EXISTS task_records (
                 id SERIAL PRIMARY KEY,
                 telegram_id BIGINT,
                 month TEXT,
-                general_posts INT DEFAULT 0,
-                special_posts INT DEFAULT 0,
                 task_done INT DEFAULT 0,
                 task_total INT DEFAULT 0,
                 holiday_days INT DEFAULT 0,
                 article_count INT DEFAULT 0,
+                general_post INT DEFAULT 0,
+                special_post INT DEFAULT 0,
                 UNIQUE(telegram_id, month)
             );
         """)
 
-        cursor.execute("ALTER TABLE task_records ADD COLUMN IF NOT EXISTS general_posts INT DEFAULT 0;")
-        cursor.execute("ALTER TABLE task_records ADD COLUMN IF NOT EXISTS special_posts INT DEFAULT 0;")
+        cursor.execute("ALTER TABLE task_records ADD COLUMN IF NOT EXISTS general_post INT DEFAULT 0;")
+        cursor.execute("ALTER TABLE task_records ADD COLUMN IF NOT EXISTS special_post INT DEFAULT 0;")
+
+        cursor.execute("""
+            INSERT INTO dynamic_logic (category, holiday_limit) 
+            VALUES ('Info Team', 20), ('Meme Team', 20)
+            ON CONFLICT (category) DO NOTHING;
+        """)
 
         conn.commit()
         conn.close()
@@ -99,7 +114,7 @@ MONTHS = ["January", "February", "March", "April", "May", "June", "July", "Augus
 
 user_state = {}
 
-# 🎹 Keyboards
+# 🎹 Keyboard Generators
 def admin_main_menu():
     markup = ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
     markup.add(
@@ -111,7 +126,6 @@ def admin_main_menu():
     )
     return markup
 
-# শুধুমাত্র মাস দেখার জায়গাতেই Close বাটন
 def get_month_keyboard():
     markup = InlineKeyboardMarkup(row_width=3)
     buttons = [InlineKeyboardButton(m, callback_data=f"sel_month_{m}") for m in MONTHS]
@@ -119,12 +133,21 @@ def get_month_keyboard():
     markup.add(InlineKeyboardButton("Close", callback_data="close_msg"))
     return markup
 
-def get_close_keyboard():
-    markup = InlineKeyboardMarkup()
-    markup.add(InlineKeyboardButton("Close", callback_data="close_msg"))
+def get_cancel_confirm_keyboard():
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton("Yes✅", callback_data="confirm_cancel_yes"),
+        InlineKeyboardButton("No❌", callback_data="confirm_cancel_no")
+    )
     return markup
 
-# 📌 Handlers
+def get_qualified_date(month_name, year=2026):
+    month_dict = {m: i for i, m in enumerate(MONTHS, 1)}
+    m_num = month_dict.get(month_name, 1)
+    last_day = calendar.monthrange(year, m_num)[1]
+    return f"1{month_name} - {last_day}{month_name}"
+
+# 📌 Telegram Bot Handlers
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     tg_id = message.from_user.id
@@ -146,7 +169,7 @@ def task_workflow_start(message):
     user_state[message.from_user.id] = {"category": category}
     bot.send_message(message.chat.id, "Select Month", reply_markup=get_month_keyboard())
 
-# ⛔ Block Member Flow (আগের অরিজিনাল প্যানেল)
+# ⛔ Block Member Flow
 @bot.message_handler(func=lambda msg: msg.text == "⛔ Block Member")
 def block_member_start(message):
     if not is_admin(message.from_user.id): return
@@ -155,9 +178,10 @@ def block_member_start(message):
         InlineKeyboardButton("Info Team", callback_data="block_select_info"),
         InlineKeyboardButton("Meme Team", callback_data="block_select_meme")
     )
+    markup.add(InlineKeyboardButton("Cancel", callback_data="ask_cancel"))
     bot.send_message(message.chat.id, "Select Team to Manage Members:", reply_markup=markup)
 
-# ✅ Unblock Flow (আগের অরিজিনাল প্যানেল)
+# ✅ Unblock Flow
 @bot.message_handler(func=lambda msg: msg.text == "✅ Unblock")
 def unblock_member_start(message):
     if not is_admin(message.from_user.id): return
@@ -188,7 +212,10 @@ def render_unblock_list(chat_id, tg_id, message_id=None):
             btn_txt = f"{name} - Unblock✅" if is_sel else f"{name} ⛔"
             markup.add(InlineKeyboardButton(btn_txt, callback_data=f"toggle_unblock_{m_id}"))
 
-        markup.add(InlineKeyboardButton("Do It", callback_data="do_unblock_receipt"))
+        markup.add(
+            InlineKeyboardButton("Do It", callback_data="do_unblock_receipt"),
+            InlineKeyboardButton("Cancel", callback_data="ask_cancel")
+        )
 
         text = "Select member to unblock:"
         if message_id: bot.edit_message_text(text, chat_id, message_id, reply_markup=markup)
@@ -202,7 +229,8 @@ def reset_data_start(message):
     markup = InlineKeyboardMarkup(row_width=1)
     markup.add(
         InlineKeyboardButton("Info Team Data", callback_data="reset_panel_info"),
-        InlineKeyboardButton("Meme Team Data", callback_data="reset_panel_meme")
+        InlineKeyboardButton("Meme Team Data", callback_data="reset_panel_meme"),
+        InlineKeyboardButton("Cancel Process", callback_data="ask_cancel")
     )
     bot.send_message(message.chat.id, "Select Option", reply_markup=markup)
 
@@ -217,61 +245,85 @@ def handle_all_callbacks(call):
     state = user_state.get(tg_id, {})
     cat = state.get("category", "Info Team")
 
-    # ক্লোজ বাটনে ইমোজি ছাড়া Closed লেখা
     if data == "close_msg":
-        bot.edit_message_text("Closed", call.message.chat.id, call.message.message_id)
+        bot.edit_message_text("Closed✅", call.message.chat.id, call.message.message_id)
+
+    elif data == "ask_cancel":
+        bot.send_message(call.message.chat.id, "Do you really want to cancel the Process?", reply_markup=get_cancel_confirm_keyboard())
+    elif data == "confirm_cancel_yes":
+        user_state[tg_id] = {}
+        bot.edit_message_text("Process Canceled Successfully✅", call.message.chat.id, call.message.message_id)
+    elif data == "confirm_cancel_no":
+        bot.edit_message_text("Resuming Process...", call.message.chat.id, call.message.message_id)
 
     elif data.startswith("sel_month_"):
         month = data.replace("sel_month_", "")
         state["month"] = month
         user_state[tg_id] = state
+        q_date = get_qualified_date(month)
 
         try:
             conn = get_db_connection()
             cursor = conn.cursor(cursor_factory=RealDictCursor)
-            cursor.execute("""
-                SELECT m.fb_name, m.team_name, 
-                       COALESCE(t.general_posts, 0) as general_posts,
-                       COALESCE(t.special_posts, 0) as special_posts,
-                       COALESCE(t.task_done, 0) as task_done, 
-                       COALESCE(t.task_total, 0) as task_total, 
-                       COALESCE(t.holiday_days, 0) as holiday_days, 
-                       COALESCE(t.article_count, 0) as article_count
-                FROM members m
-                LEFT JOIN task_records t ON m.telegram_id = t.telegram_id AND t.month = %s
-                WHERE m.team_name = ANY(%s) AND m.is_blocked = FALSE AND m.is_removed = FALSE
-                ORDER BY m.team_name, m.fb_name;
-            """, (month, TEAMS_MAP.get(cat, [])))
+            
+            if cat == "Meme Team":
+                cursor.execute("""
+                    SELECT m.fb_name, m.team_name, 
+                           COALESCE(t.general_post, 0) as general_post, 
+                           COALESCE(t.special_post, 0) as special_post, 
+                           COALESCE(t.task_done, 0) as task_done, 
+                           COALESCE(t.task_total, 0) as task_total, 
+                           COALESCE(t.holiday_days, 0) as holiday_days
+                    FROM members m
+                    LEFT JOIN task_records t ON m.telegram_id = t.telegram_id AND t.month = %s
+                    WHERE m.team_name = ANY(%s) AND m.is_blocked = FALSE AND m.is_removed = FALSE
+                """, (month, TEAMS_MAP.get(cat, [])))
+            else:
+                cursor.execute("""
+                    SELECT m.fb_name, m.team_name, 
+                           COALESCE(t.task_done, 0) as task_done, 
+                           COALESCE(t.task_total, 0) as task_total, 
+                           COALESCE(t.holiday_days, 0) as holiday_days, 
+                           COALESCE(t.article_count, 0) as article_count
+                    FROM members m
+                    LEFT JOIN task_records t ON m.telegram_id = t.telegram_id AND t.month = %s
+                    WHERE m.team_name = ANY(%s) AND m.is_blocked = FALSE AND m.is_removed = FALSE
+                """, (month, TEAMS_MAP.get(cat, [])))
+
             records = cursor.fetchall()
             conn.close()
 
+            close_markup = InlineKeyboardMarkup()
+            close_markup.add(InlineKeyboardButton("Close", callback_data="close_msg"))
+
             if not records:
-                bot.edit_message_text(f"No Data Found for {month}!", call.message.chat.id, call.message.message_id, reply_markup=get_close_keyboard())
+                msg_text = f"Batch Number: \nQualified Date: {q_date}\n\nNo Data Found!"
+                bot.edit_message_text(msg_text, call.message.chat.id, call.message.message_id, reply_markup=close_markup)
                 return
 
             teams_grouped = {}
             for r in records:
-                t_name = r.get('team_name', 'Team')
+                t_name = r.get('team_name', 'Team Alpha')
                 teams_grouped.setdefault(t_name, []).append(r)
 
-            msg_lines = [
-                "Batch Number: ",
-                "Qualified Date: ",
-                ""
-            ]
-
+            msg_lines = [f"Batch Number: \nQualified Date: {q_date}\n\n"]
+            
             for t_name, m_list in teams_grouped.items():
-                msg_lines.append(f"{t_name}")
+                msg_lines.append(f"**{t_name}**\n")
                 for r in m_list:
                     if cat == "Meme Team":
-                        msg_lines.append(f"{r['fb_name']} - {r['general_posts']} - {r['special_posts']} - {r['task_done']}/{r['task_total']} - {r['holiday_days']}Days")
+                        msg_lines.append(f"{r['fb_name']} - {r['general_post']} - {r['special_post']} - {r['task_done']}/{r['task_total']} - {r['holiday_days']}Days\n")
                     else:
-                        msg_lines.append(f"{r['fb_name']} - {r['task_done']}/{r['task_total']} - {r['holiday_days']}Days - {r['article_count']}")
-                msg_lines.append("")
+                        msg_lines.append(f"{r['fb_name']} - {r['task_done']}/{r['task_total']} - {r['holiday_days']}Days - {r['article_count']}\n")
+                msg_lines.append("\n")
 
-            bot.edit_message_text("\n".join(msg_lines).strip(), call.message.chat.id, call.message.message_id, reply_markup=get_close_keyboard())
+            full_text = "".join(msg_lines).strip()
+            bot.edit_message_text(full_text, call.message.chat.id, call.message.message_id, parse_mode="Markdown", reply_markup=close_markup)
+
         except Exception as e:
-            bot.edit_message_text(f"Error fetching data: {e}", call.message.chat.id, call.message.message_id, reply_markup=get_close_keyboard())
+            close_markup = InlineKeyboardMarkup()
+            close_markup.add(InlineKeyboardButton("Close", callback_data="close_msg"))
+            bot.edit_message_text(f"Batch Number: \nQualified Date: {q_date}\n\nError: {e}", call.message.chat.id, call.message.message_id, reply_markup=close_markup)
 
     elif data.startswith("block_select_"):
         target_cat = "Info Team" if "info" in data else "Meme Team"
@@ -318,8 +370,10 @@ def handle_all_callbacks(call):
         msg_lines.append("\nAre you sure you want to do it?")
         markup = InlineKeyboardMarkup(row_width=2)
         markup.add(
-            InlineKeyboardButton("Yes✅", callback_data="confirm_block_exec")
+            InlineKeyboardButton("Yes✅", callback_data="confirm_block_exec"),
+            InlineKeyboardButton("No❌", callback_data="back_to_block_list")
         )
+        markup.add(InlineKeyboardButton("Cancel", callback_data="ask_cancel"))
         bot.edit_message_text("\n".join(msg_lines), call.message.chat.id, call.message.message_id, reply_markup=markup)
 
     elif data == "confirm_block_exec":
@@ -367,8 +421,10 @@ def handle_all_callbacks(call):
         msg_lines.append("\nAre you sure you want to do it?")
         markup = InlineKeyboardMarkup(row_width=2)
         markup.add(
-            InlineKeyboardButton("Yes✅", callback_data="confirm_unblock_exec")
+            InlineKeyboardButton("Yes✅", callback_data="confirm_unblock_exec"),
+            InlineKeyboardButton("No❌", callback_data="back_to_unblock_list")
         )
+        markup.add(InlineKeyboardButton("Cancel", callback_data="ask_cancel"))
         bot.edit_message_text("\n".join(msg_lines), call.message.chat.id, call.message.message_id, reply_markup=markup)
 
     elif data == "confirm_unblock_exec":
@@ -383,6 +439,11 @@ def handle_all_callbacks(call):
         except Exception as e:
             bot.edit_message_text(f"Error unblocking members: {e}", call.message.chat.id, call.message.message_id)
 
+    elif data == "back_to_block_list":
+        render_block_members_list(call.message.chat.id, tg_id, call.message.message_id)
+    elif data == "back_to_unblock_list":
+        render_unblock_list(call.message.chat.id, tg_id, call.message.message_id)
+
     elif data.startswith("reset_panel_"):
         target_team = "Info Team" if "info" in data else "Meme Team"
         state["reset_target"] = target_team
@@ -390,15 +451,27 @@ def handle_all_callbacks(call):
         
         markup = InlineKeyboardMarkup(row_width=1)
         markup.add(InlineKeyboardButton("Reset All Data", callback_data=f"confirm_reset_{target_team}"))
+        markup.add(InlineKeyboardButton("Back", callback_data="cmd_reset_data"), InlineKeyboardButton("Cancel", callback_data="ask_cancel"))
         bot.edit_message_text(f"{target_team} Reset Panel", call.message.chat.id, call.message.message_id, reply_markup=markup)
+
+    elif data == "cmd_reset_data":
+        markup = InlineKeyboardMarkup(row_width=1)
+        markup.add(
+            InlineKeyboardButton("Info Team Data", callback_data="reset_panel_info"),
+            InlineKeyboardButton("Meme Team Data", callback_data="reset_panel_meme"),
+            InlineKeyboardButton("Cancel Process", callback_data="ask_cancel")
+        )
+        bot.edit_message_text("Select Option", call.message.chat.id, call.message.message_id, reply_markup=markup)
 
     elif data.startswith("confirm_reset_"):
         target_team = state.get("reset_target", "Info Team")
         msg = f"Are you sure you want to reset all data for {target_team}?"
         markup = InlineKeyboardMarkup(row_width=2)
         markup.add(
-            InlineKeyboardButton("Yes✅", callback_data=f"do_reset_{target_team}")
+            InlineKeyboardButton("Yes✅", callback_data=f"do_reset_{target_team}"),
+            InlineKeyboardButton("No❌", callback_data="cmd_reset_data")
         )
+        markup.add(InlineKeyboardButton("Cancel", callback_data="ask_cancel"))
         bot.edit_message_text(msg, call.message.chat.id, call.message.message_id, reply_markup=markup)
 
     elif data.startswith("do_reset_"):
@@ -451,7 +524,10 @@ def render_block_members_list(chat_id, tg_id, message_id=None):
             ]
             markup.row(*row)
 
-    markup.add(InlineKeyboardButton("Do It", callback_data="do_block_receipt"))
+    markup.add(
+        InlineKeyboardButton("Do It", callback_data="do_block_receipt"),
+        InlineKeyboardButton("Cancel", callback_data="ask_cancel")
+    )
 
     text = f"Manage {manage_cat} Members:"
     if message_id: bot.edit_message_text(text, chat_id, message_id, reply_markup=markup)
