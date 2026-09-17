@@ -467,7 +467,7 @@ def handle_all_callbacks(call):
         markup.add(InlineKeyboardButton("Cancel", callback_data="do_cancel"))
         bot.edit_message_text("Select Option", call.message.chat.id, call.message.message_id, reply_markup=markup)
 
-    # 🟢 [FIX 1]: Directly read team from callback data to prevent memory loss
+    # 🟢 [FIX 1]: Directly read team from callback data
     elif data.startswith("confirm_reset_"):
         target_team = data.replace("confirm_reset_", "")
         msg = f"Are you sure you want to reset all data for {target_team}?"
@@ -479,39 +479,32 @@ def handle_all_callbacks(call):
         markup.add(InlineKeyboardButton("Cancel", callback_data="do_cancel"))
         bot.edit_message_text(msg, call.message.chat.id, call.message.message_id, reply_markup=markup)
 
-    # 🟢 [FIX 2]: Directly read team from callback and use IN %s for bulletproof SQL matching
+    # 🟢 [FIX 2]: Bulletproof Python Filtering instead of failing SQL subqueries!
     elif data.startswith("do_reset_"):
         target_team = data.replace("do_reset_", "")
         try:
             conn = get_db_connection()
             cursor = conn.cursor()
             
-            # Using tuple to guarantee correct IN clause execution in psycopg2
-            teams_tuple = tuple(TEAMS_MAP.get(target_team, []))
+            teams_list = TEAMS_MAP.get(target_team, [])
             
-            if target_team == "Meme Team":
-                cursor.execute("""
-                    DELETE FROM task_records 
-                    WHERE telegram_id IN (SELECT telegram_id FROM members WHERE team_name IN %s)
-                    AND telegram_id NOT IN (SELECT telegram_id FROM grading_moderators);
-                """, (teams_tuple,))
-                
-                cursor.execute("""
-                    DELETE FROM members 
-                    WHERE team_name IN %s
-                    AND telegram_id NOT IN (SELECT telegram_id FROM grading_moderators);
-                """, (teams_tuple,))
-            else:
-                cursor.execute("""
-                    DELETE FROM task_records 
-                    WHERE telegram_id IN (SELECT telegram_id FROM members WHERE team_name IN %s);
-                """, (teams_tuple,))
-                
-                cursor.execute("""
-                    DELETE FROM members 
-                    WHERE team_name IN %s;
-                """, (teams_tuple,))
+            # STEP 1: Find all members in the selected team
+            cursor.execute("SELECT telegram_id FROM members WHERE team_name = ANY(%s);", (teams_list,))
+            team_members = [row[0] for row in cursor.fetchall()]
 
+            if target_team == "Meme Team":
+                # STEP 2: Fetch all moderators and safely filter them out via Python
+                cursor.execute("SELECT telegram_id FROM grading_moderators;")
+                mods = {row[0] for row in cursor.fetchall()}
+                members_to_delete = [mid for mid in team_members if mid not in mods]
+            else:
+                members_to_delete = team_members
+
+            # STEP 3: Wipeout only the unprotected members
+            if members_to_delete:
+                cursor.execute("DELETE FROM task_records WHERE telegram_id = ANY(%s);", (members_to_delete,))
+                cursor.execute("DELETE FROM members WHERE telegram_id = ANY(%s);", (members_to_delete,))
+            
             conn.commit()
             conn.close()
             bot.edit_message_text(f"{target_team} data has been reset successfully.✅", call.message.chat.id, call.message.message_id)
