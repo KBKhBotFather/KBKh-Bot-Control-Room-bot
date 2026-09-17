@@ -213,7 +213,6 @@ def render_unblock_list(chat_id, tg_id, message_id=None):
             btn_txt = f"{name} - Unblock✅" if is_sel else f"{name} ⛔"
             markup.add(InlineKeyboardButton(btn_txt, callback_data=f"toggle_unblock_{m_id}"))
 
-        # 🟢 Do it and Cancel buttons side by side
         markup.row(
             InlineKeyboardButton("Do It", callback_data="do_unblock_receipt"),
             InlineKeyboardButton("Cancel", callback_data="do_cancel")
@@ -247,7 +246,6 @@ def handle_all_callbacks(call):
     state = user_state.get(tg_id, {})
     cat = state.get("category", "Info Team")
 
-    # 🟢 Silent Cancel / Close Handlers
     if data in ["close_msg", "do_cancel"]:
         try:
             bot.delete_message(call.message.chat.id, call.message.message_id)
@@ -467,7 +465,6 @@ def handle_all_callbacks(call):
         markup.add(InlineKeyboardButton("Cancel", callback_data="do_cancel"))
         bot.edit_message_text("Select Option", call.message.chat.id, call.message.message_id, reply_markup=markup)
 
-    # 🟢 [FIX 1]: Directly read team from callback data
     elif data.startswith("confirm_reset_"):
         target_team = data.replace("confirm_reset_", "")
         msg = f"Are you sure you want to reset all data for {target_team}?"
@@ -479,7 +476,7 @@ def handle_all_callbacks(call):
         markup.add(InlineKeyboardButton("Cancel", callback_data="do_cancel"))
         bot.edit_message_text(msg, call.message.chat.id, call.message.message_id, reply_markup=markup)
 
-    # 🟢 [FIX 2]: Bulletproof Python Filtering instead of failing SQL subqueries!
+    # 🟢 [ULTIMATE FIX]: Brute-force Delete Method by filtering Active Moderators Only
     elif data.startswith("do_reset_"):
         target_team = data.replace("do_reset_", "")
         try:
@@ -488,26 +485,35 @@ def handle_all_callbacks(call):
             
             teams_list = TEAMS_MAP.get(target_team, [])
             
-            # STEP 1: Find all members in the selected team
+            # STEP 1: Find ALL members in the selected team
             cursor.execute("SELECT telegram_id FROM members WHERE team_name = ANY(%s);", (teams_list,))
             team_members = [row[0] for row in cursor.fetchall()]
 
             if target_team == "Meme Team":
-                # STEP 2: Fetch all moderators and safely filter them out via Python
-                cursor.execute("SELECT telegram_id FROM grading_moderators;")
-                mods = {row[0] for row in cursor.fetchall()}
-                members_to_delete = [mid for mid in team_members if mid not in mods]
+                # STEP 2: Only protect ACTIVE moderators (is_active = TRUE).
+                # If your 2nd test account was stuck as an inactive moderator, it will now be wiped properly!
+                cursor.execute("SELECT telegram_id FROM grading_moderators WHERE is_active = TRUE;")
+                active_mods = {row[0] for row in cursor.fetchall()}
+                members_to_delete = [mid for mid in team_members if mid not in active_mods]
             else:
                 members_to_delete = team_members
 
-            # STEP 3: Wipeout only the unprotected members
-            if members_to_delete:
-                cursor.execute("DELETE FROM task_records WHERE telegram_id = ANY(%s);", (members_to_delete,))
-                cursor.execute("DELETE FROM members WHERE telegram_id = ANY(%s);", (members_to_delete,))
+            # STEP 3: Loop through and delete INDIVIDUALLY to guarantee execution.
+            deleted_count = 0
+            for mid in members_to_delete:
+                cursor.execute("DELETE FROM task_records WHERE telegram_id = %s;", (mid,))
+                cursor.execute("DELETE FROM members WHERE telegram_id = %s;", (mid,))
+                deleted_count += 1
             
             conn.commit()
             conn.close()
-            bot.edit_message_text(f"{target_team} data has been reset successfully.✅", call.message.chat.id, call.message.message_id)
+            
+            # Provide clear feedback on how many members were permanently erased
+            bot.edit_message_text(
+                f"{target_team} data has been reset successfully.✅\n\n[System Log: {deleted_count} general members permanently erased]", 
+                call.message.chat.id, 
+                call.message.message_id
+            )
         except Exception as e:
             bot.edit_message_text(f"Error resetting data: {e}", call.message.chat.id, call.message.message_id)
 
@@ -548,7 +554,6 @@ def render_block_members_list(chat_id, tg_id, message_id=None):
             ]
             markup.row(*row)
 
-    # 🟢 Do it and Cancel buttons side by side
     markup.row(
         InlineKeyboardButton("Do It", callback_data="do_block_receipt"),
         InlineKeyboardButton("Cancel", callback_data="do_cancel")
