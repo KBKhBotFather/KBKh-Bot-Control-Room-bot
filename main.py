@@ -267,7 +267,6 @@ def handle_all_callbacks(call):
             cursor = conn.cursor(cursor_factory=RealDictCursor)
             
             if cat == "Meme Team":
-                # 🟢 Added special_mark extraction here
                 cursor.execute("""
                     SELECT m.fb_name, m.team_name, 
                            COALESCE(t.general_post, 0) as general_post, 
@@ -314,7 +313,6 @@ def handle_all_callbacks(call):
                 msg_lines.append(f"**{t_name}**\n")
                 for r in m_list:
                     if cat == "Meme Team":
-                        # 🟢 Updated formatting with special_mark included
                         msg_lines.append(f"{r['fb_name']} - {r['general_post']} - {r['special_post']} - {r['task_done']}/{r['task_total']} - {r['special_mark']} - {r['holiday_days']}Days\n")
                     else:
                         msg_lines.append(f"{r['fb_name']} - {r['task_done']}/{r['task_total']} - {r['holiday_days']}Days - {r['article_count']}\n")
@@ -469,8 +467,9 @@ def handle_all_callbacks(call):
         markup.add(InlineKeyboardButton("Cancel", callback_data="do_cancel"))
         bot.edit_message_text("Select Option", call.message.chat.id, call.message.message_id, reply_markup=markup)
 
+    # 🟢 [FIX 1]: Directly read team from callback data to prevent memory loss
     elif data.startswith("confirm_reset_"):
-        target_team = state.get("reset_target", "Info Team")
+        target_team = data.replace("confirm_reset_", "")
         msg = f"Are you sure you want to reset all data for {target_team}?"
         markup = InlineKeyboardMarkup(row_width=2)
         markup.add(
@@ -480,28 +479,38 @@ def handle_all_callbacks(call):
         markup.add(InlineKeyboardButton("Cancel", callback_data="do_cancel"))
         bot.edit_message_text(msg, call.message.chat.id, call.message.message_id, reply_markup=markup)
 
+    # 🟢 [FIX 2]: Directly read team from callback and use IN %s for bulletproof SQL matching
     elif data.startswith("do_reset_"):
-        target_team = state.get("reset_target", "Info Team")
+        target_team = data.replace("do_reset_", "")
         try:
             conn = get_db_connection()
             cursor = conn.cursor()
             
-            # 🟢 Safe Reset Logic implemented! Moderators will be protected.
+            # Using tuple to guarantee correct IN clause execution in psycopg2
+            teams_tuple = tuple(TEAMS_MAP.get(target_team, []))
+            
             if target_team == "Meme Team":
                 cursor.execute("""
                     DELETE FROM task_records 
-                    WHERE telegram_id IN (SELECT telegram_id FROM members WHERE team_name = ANY(%s))
+                    WHERE telegram_id IN (SELECT telegram_id FROM members WHERE team_name IN %s)
                     AND telegram_id NOT IN (SELECT telegram_id FROM grading_moderators);
-                """, (TEAMS_MAP.get(target_team, []),))
+                """, (teams_tuple,))
                 
                 cursor.execute("""
                     DELETE FROM members 
-                    WHERE team_name = ANY(%s)
+                    WHERE team_name IN %s
                     AND telegram_id NOT IN (SELECT telegram_id FROM grading_moderators);
-                """, (TEAMS_MAP.get(target_team, []),))
+                """, (teams_tuple,))
             else:
-                cursor.execute("DELETE FROM task_records WHERE telegram_id IN (SELECT telegram_id FROM members WHERE team_name = ANY(%s));", (TEAMS_MAP.get(target_team, []),))
-                cursor.execute("DELETE FROM members WHERE team_name = ANY(%s);", (TEAMS_MAP.get(target_team, []),))
+                cursor.execute("""
+                    DELETE FROM task_records 
+                    WHERE telegram_id IN (SELECT telegram_id FROM members WHERE team_name IN %s);
+                """, (teams_tuple,))
+                
+                cursor.execute("""
+                    DELETE FROM members 
+                    WHERE team_name IN %s;
+                """, (teams_tuple,))
 
             conn.commit()
             conn.close()
