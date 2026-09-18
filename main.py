@@ -495,8 +495,7 @@ def handle_all_callbacks(call):
                 active_mods = {row[0] for row in cursor.fetchall()}
                 members_to_delete = [mid for mid in team_members if mid not in active_mods]
                 
-                # 👇 [শুধুমাত্র এই লাইনটি নতুন যুক্ত করা হয়েছে]
-                # মডারেটরদের কাজ পাওয়ার হিসাব (total_assigned) জিরো করা হচ্ছে, যেন নতুন করে আবার সমানভাবে কাজ বন্টন হয়!
+                # 👇 [নতুন যুক্ত করা লাইন: মডারেটরদের বণ্টনের হিসাব জিরো করা হচ্ছে]
                 cursor.execute("UPDATE grading_moderators SET total_assigned = 0;")
             else:
                 members_to_delete = team_members
@@ -513,7 +512,7 @@ def handle_all_callbacks(call):
             
             # Provide clear feedback on how many members were permanently erased
             bot.edit_message_text(
-                f"{target_team} data has been reset successfully.✅\n\n[System Log: {deleted_count} general members permanently erased. Moderators task count reset to 0.]", 
+                f"{target_team} data has been reset successfully.✅\n\n[System Log: {deleted_count} general members permanently erased. Moderator distribution count reset to 0.]", 
                 call.message.chat.id, 
                 call.message.message_id
             )
